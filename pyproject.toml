@@ -17,10 +17,6 @@ dependencies = [
     "matplotlib (>=3.10.9,<4.0.0)",
     "seaborn (>=0.13.2,<0.14.0)",
     "transformers (>=5.8.1,<6.0.0)",
-    "torch (>=2.12.0,<3.0.0)",
-    "torchvision (>=0.27.0,<0.28.0)",
-    "accelerate (>=1.13.0,<2.0.0)",
-    "bitsandbytes (>=0.49.2,<0.50.0)",
     "scipy (>=1.17.1,<2.0.0)",
     "scikit-learn (>=1.8.0,<2.0.0)"
 ]
@@ -28,16 +24,28 @@ dependencies = [
 [tool.poetry]
 packages = [{include = "legal_doc_parser", from = "src"}]
 
-
 [[tool.poetry.source]]
 name = "pytorch-cu132"
 url = "https://download.pytorch.org/whl/cu132"
 priority = "explicit"
 
+[tool.poetry.group.mac]
+optional = true
 
-[tool.poetry.dependencies]
-torch = {source = "pytorch-cu132"}
-torchvision = {source = "pytorch-cu132"}
+[tool.poetry.group.mac.dependencies]
+torch = {version = "==2.12.0", markers = "sys_platform == 'darwin'"}
+torchvision = {version = "==0.27.0", markers = "sys_platform == 'darwin'"}
+accelerate = {version = ">=1.13.0,<2.0.0", markers = "sys_platform == 'darwin'"}
+
+[tool.poetry.group.cuda]
+optional = true
+
+[tool.poetry.group.cuda.dependencies]
+torch = {version = "==2.12.0+cu132", source = "pytorch-cu132", markers = "sys_platform == 'linux'"}
+torchvision = {version = "==0.27.0+cu132", source = "pytorch-cu132", markers = "sys_platform == 'linux'"}
+accelerate = {version = ">=1.13.0,<2.0.0", markers = "sys_platform == 'linux'"}
+bitsandbytes = {version = ">=0.49.2,<0.50.0", markers = "sys_platform == 'linux'"}
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
