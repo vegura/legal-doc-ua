@@ -6,7 +6,7 @@ authors = [
     {name = "Illia Savenko",email = "i.savenko@sxope.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "pandas (>=3.0.0,<4.0.0)",
     "numpy (>=2.4.2,<3.0.0)",
@@ -15,13 +15,29 @@ dependencies = [
     "google-cloud-storage (>=3.9.0,<4.0.0)",
     "google-cloud-bigquery[pandas] (>=3.40.1,<4.0.0)",
     "matplotlib (>=3.10.9,<4.0.0)",
-    "seaborn (>=0.13.2,<0.14.0)"
+    "seaborn (>=0.13.2,<0.14.0)",
+    "transformers (>=5.8.1,<6.0.0)",
+    "torch (>=2.12.0,<3.0.0)",
+    "torchvision (>=0.27.0,<0.28.0)",
+    "accelerate (>=1.13.0,<2.0.0)",
+    "bitsandbytes (>=0.49.2,<0.50.0)",
+    "scipy (>=1.17.1,<2.0.0)",
+    "scikit-learn (>=1.8.0,<2.0.0)"
 ]
 
 [tool.poetry]
 packages = [{include = "legal_doc_parser", from = "src"}]
 
 
+[[tool.poetry.source]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+priority = "explicit"
+
+
+[tool.poetry.dependencies]
+torch = {source = "pytorch-cu132"}
+torchvision = {source = "pytorch-cu132"}
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
