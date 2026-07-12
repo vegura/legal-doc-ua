@@ -72,6 +72,7 @@ class DataPreparationConfig:
     noncriminal_fraction: float = 0.10
     validation_fraction: float = 0.01
     shard_rows: int = 1_000
+    parquet_compression: str = "zstd"
     download_workers: int = 16
     min_characters: int = 200
     min_cyrillic_ratio: float = 0.20
@@ -92,6 +93,8 @@ class DataPreparationConfig:
             raise ValueError("validation_fraction must be between 0 and 1")
         if self.shard_rows <= 0:
             raise ValueError("shard_rows must be positive")
+        if self.parquet_compression not in {"zstd", "gzip", "snappy"}:
+            raise ValueError("parquet_compression must be zstd, gzip, or snappy")
         if self.download_workers <= 0:
             raise ValueError("download_workers must be positive")
         if self.min_characters <= 0:
@@ -114,6 +117,7 @@ class DataPreparationConfig:
             "noncriminal_fraction": self.noncriminal_fraction,
             "validation_fraction": self.validation_fraction,
             "shard_rows": self.shard_rows,
+            "parquet_compression": self.parquet_compression,
             "min_characters": self.min_characters,
             "min_cyrillic_ratio": self.min_cyrillic_ratio,
             "seed": self.seed,
@@ -447,11 +451,16 @@ def _clean_source_row(
         return None, error_row
 
 
-def _write_parquet(path: Path, rows: Sequence[dict[str, Any]], schema: pa.Schema) -> None:
+def _write_parquet(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    schema: pa.Schema,
+    compression: str,
+) -> None:
     pq.write_table(
         pa.Table.from_pylist(list(rows), schema=schema),
         path,
-        compression="zstd",
+        compression=compression,
     )
 
 
@@ -498,9 +507,18 @@ def clean_and_shard_manifest(
             local_train = work_dir / f"train-{shard_index:06d}.parquet"
             local_validation = work_dir / f"validation-{shard_index:06d}.parquet"
             local_errors = work_dir / f"errors-{shard_index:06d}.parquet"
-            _write_parquet(local_train, train_rows, CLEAN_SCHEMA)
-            _write_parquet(local_validation, validation_rows, CLEAN_SCHEMA)
-            _write_parquet(local_errors, error_rows, ERROR_SCHEMA)
+            _write_parquet(
+                local_train, train_rows, CLEAN_SCHEMA, config.parquet_compression
+            )
+            _write_parquet(
+                local_validation,
+                validation_rows,
+                CLEAN_SCHEMA,
+                config.parquet_compression,
+            )
+            _write_parquet(
+                local_errors, error_rows, ERROR_SCHEMA, config.parquet_compression
+            )
 
             _upload_file(
                 gcs_client,
@@ -565,6 +583,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--noncriminal-fraction", type=float, default=0.10)
     parser.add_argument("--validation-fraction", type=float, default=0.01)
     parser.add_argument("--shard-rows", type=int, default=1_000)
+    parser.add_argument(
+        "--parquet-compression", choices=("zstd", "gzip", "snappy"), default="zstd"
+    )
     parser.add_argument("--download-workers", type=int, default=16)
     parser.add_argument("--min-characters", type=int, default=200)
     parser.add_argument("--min-cyrillic-ratio", type=float, default=0.20)
@@ -585,6 +606,7 @@ def main() -> None:
         noncriminal_fraction=args.noncriminal_fraction,
         validation_fraction=args.validation_fraction,
         shard_rows=args.shard_rows,
+        parquet_compression=args.parquet_compression,
         download_workers=args.download_workers,
         min_characters=args.min_characters,
         min_cyrillic_ratio=args.min_cyrillic_ratio,

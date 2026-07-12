@@ -58,20 +58,23 @@ class PretrainingConfig:
     tokenizer_max_documents: int = 200_000
     max_sequence_length: int = 512
     min_chunk_tokens: int = 32
+    parquet_read_batch_rows: int = 32
     mlm_probability: float = 0.15
     max_steps: int = 100_000
-    per_device_batch_size: int = 8
-    gradient_accumulation_steps: int = 8
+    per_device_batch_size: int = 0
+    gradient_accumulation_steps: int = 0
+    gradient_checkpointing: str = "auto"
     learning_rate: float = 5e-4
     warmup_ratio: float = 0.10
     weight_decay: float = 0.01
     logging_steps: int = 50
-    eval_steps: int = 500
-    save_steps: int = 500
+    eval_steps: int = 2_000
+    save_steps: int = 2_000
     max_eval_sequences: int = 2_048
     cache_max_gb: float = 4.0
     dataloader_workers: int = 0
-    remote_checkpoint_limit: int = 5
+    local_checkpoint_limit: int = 1
+    remote_checkpoint_limit: int = 2
     seed: int = 42
     resume: bool = True
 
@@ -89,12 +92,18 @@ class PretrainingConfig:
             raise ValueError("max_sequence_length must be in the BGE range 1..512")
         if not 0 < self.min_chunk_tokens <= self.max_sequence_length - 2:
             raise ValueError("min_chunk_tokens must fit inside max_sequence_length")
+        if self.parquet_read_batch_rows <= 0:
+            raise ValueError("parquet_read_batch_rows must be positive")
         if not 0 < self.mlm_probability < 1:
             raise ValueError("mlm_probability must be between 0 and 1")
         if self.max_steps <= 0:
             raise ValueError("max_steps must be positive for a streaming dataset")
-        if self.per_device_batch_size <= 0 or self.gradient_accumulation_steps <= 0:
-            raise ValueError("batch size and gradient accumulation must be positive")
+        if self.per_device_batch_size < 0 or self.gradient_accumulation_steps < 0:
+            raise ValueError(
+                "batch size and gradient accumulation cannot be negative; use 0 for auto"
+            )
+        if self.gradient_checkpointing not in {"auto", "on", "off"}:
+            raise ValueError("gradient_checkpointing must be auto, on, or off")
         if self.eval_steps <= 0 or self.save_steps <= 0 or self.logging_steps <= 0:
             raise ValueError("logging, evaluation, and save intervals must be positive")
         if self.eval_steps != self.save_steps:
@@ -103,6 +112,8 @@ class PretrainingConfig:
             raise ValueError("cache_max_gb must be positive")
         if self.dataloader_workers < 0:
             raise ValueError("dataloader_workers cannot be negative")
+        if self.local_checkpoint_limit <= 0:
+            raise ValueError("local_checkpoint_limit must be positive")
         if self.remote_checkpoint_limit <= 0:
             raise ValueError("remote_checkpoint_limit must be positive")
 
@@ -117,6 +128,60 @@ class PretrainingConfig:
     @property
     def local_run_dir(self) -> Path:
         return Path(self.local_root) / self.run_id
+
+
+@dataclass(frozen=True)
+class RuntimeTrainingSettings:
+    per_device_batch_size: int
+    gradient_accumulation_steps: int
+    gradient_checkpointing: bool
+    tf32: bool
+    gpu_memory_gb: float
+
+
+def resolve_runtime_training_settings(
+    config: PretrainingConfig,
+) -> RuntimeTrainingSettings:
+    has_cuda = torch.cuda.is_available()
+    gpu_memory_gb = 0.0
+    capability_major = 0
+    if has_cuda:
+        properties = torch.cuda.get_device_properties(0)
+        gpu_memory_gb = properties.total_memory / 1024**3
+        capability_major = torch.cuda.get_device_capability(0)[0]
+
+    if config.per_device_batch_size > 0:
+        batch_size = config.per_device_batch_size
+    elif gpu_memory_gb >= 70:
+        batch_size = 64
+    elif gpu_memory_gb >= 35:
+        batch_size = 32
+    elif gpu_memory_gb >= 20:
+        batch_size = 16
+    elif has_cuda:
+        batch_size = 8
+    else:
+        batch_size = 4
+
+    if config.gradient_accumulation_steps > 0:
+        accumulation = config.gradient_accumulation_steps
+    else:
+        accumulation = max(1, math.ceil(64 / batch_size))
+
+    if config.gradient_checkpointing == "on":
+        use_gradient_checkpointing = True
+    elif config.gradient_checkpointing == "off":
+        use_gradient_checkpointing = False
+    else:
+        use_gradient_checkpointing = has_cuda and gpu_memory_gb < 16
+
+    return RuntimeTrainingSettings(
+        per_device_batch_size=batch_size,
+        gradient_accumulation_steps=accumulation,
+        gradient_checkpointing=use_gradient_checkpointing,
+        tf32=has_cuda and capability_major >= 8,
+        gpu_memory_gb=gpu_memory_gb,
+    )
 
 
 def parse_gcs_uri(uri: str) -> tuple[str, str]:
@@ -234,6 +299,7 @@ class GCSParquetMLMDataset(IterableDataset):
         seed: int = 42,
         repeat: bool = True,
         max_sequences: int | None = None,
+        parquet_read_batch_rows: int = 32,
     ) -> None:
         super().__init__()
         if not shard_uris:
@@ -246,6 +312,7 @@ class GCSParquetMLMDataset(IterableDataset):
         self.seed = seed
         self.repeat = repeat
         self.max_sequences = max_sequences
+        self.parquet_read_batch_rows = parquet_read_batch_rows
 
     def _sequences_from_text(self, text: str) -> Iterator[dict[str, list[int]]]:
         token_ids = self.tokenizer(
@@ -284,17 +351,23 @@ class GCSParquetMLMDataset(IterableDataset):
             ordered_shards = list(worker_shards)
             rng.shuffle(ordered_shards)
             for local_path in _prefetched_paths(ordered_shards, self.materializer):
-                table = pq.read_table(local_path, columns=["text"])
-                texts = table.column("text").to_pylist()
-                rng.shuffle(texts)
-                for text in texts:
-                    if not text:
-                        continue
-                    for sequence in self._sequences_from_text(str(text)):
-                        yield sequence
-                        emitted += 1
-                        if self.max_sequences is not None and emitted >= self.max_sequences:
-                            return
+                parquet = pq.ParquetFile(local_path)
+                for batch in parquet.iter_batches(
+                    columns=["text"], batch_size=self.parquet_read_batch_rows
+                ):
+                    texts = batch.column(0).to_pylist()
+                    rng.shuffle(texts)
+                    for text in texts:
+                        if not text:
+                            continue
+                        for sequence in self._sequences_from_text(str(text)):
+                            yield sequence
+                            emitted += 1
+                            if (
+                                self.max_sequences is not None
+                                and emitted >= self.max_sequences
+                            ):
+                                return
             if not self.repeat:
                 return
             epoch += 1
@@ -694,11 +767,27 @@ def run_pretraining(config: PretrainingConfig) -> dict[str, float]:
         config.run_id,
     )
     logger.info(
-        "Training parameters: max_steps=%s, batch=%s, accumulation=%s, sequence_length=%s",
+        "Requested training parameters: max_steps=%s, batch=%s, accumulation=%s, "
+        "sequence_length=%s, checkpoint_every=%s, local_keep=%s, cloud_keep=%s",
         config.max_steps,
         config.per_device_batch_size,
         config.gradient_accumulation_steps,
         config.max_sequence_length,
+        config.save_steps,
+        config.local_checkpoint_limit,
+        config.remote_checkpoint_limit,
+    )
+    runtime_settings = resolve_runtime_training_settings(config)
+    logger.info(
+        "Resolved hardware settings: gpu_memory=%.1f GiB, batch=%s, accumulation=%s, "
+        "effective_batch=%s, gradient_checkpointing=%s, tf32=%s",
+        runtime_settings.gpu_memory_gb,
+        runtime_settings.per_device_batch_size,
+        runtime_settings.gradient_accumulation_steps,
+        runtime_settings.per_device_batch_size
+        * runtime_settings.gradient_accumulation_steps,
+        runtime_settings.gradient_checkpointing,
+        runtime_settings.tf32,
     )
     cache = GCSShardCache(
         config.local_run_dir / "shard-cache",
@@ -736,6 +825,7 @@ def run_pretraining(config: PretrainingConfig) -> dict[str, float]:
         min_chunk_tokens=config.min_chunk_tokens,
         seed=config.seed,
         repeat=True,
+        parquet_read_batch_rows=config.parquet_read_batch_rows,
     )
     validation_dataset = GCSParquetMLMDataset(
         validation_shards,
@@ -746,6 +836,7 @@ def run_pretraining(config: PretrainingConfig) -> dict[str, float]:
         seed=config.seed,
         repeat=False,
         max_sequences=config.max_eval_sequences,
+        parquet_read_batch_rows=config.parquet_read_batch_rows,
     )
 
     output_dir = config.local_run_dir / "trainer"
@@ -761,23 +852,25 @@ def run_pretraining(config: PretrainingConfig) -> dict[str, float]:
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         max_steps=config.max_steps,
-        per_device_train_batch_size=config.per_device_batch_size,
-        per_device_eval_batch_size=config.per_device_batch_size,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        per_device_train_batch_size=runtime_settings.per_device_batch_size,
+        per_device_eval_batch_size=runtime_settings.per_device_batch_size,
+        gradient_accumulation_steps=runtime_settings.gradient_accumulation_steps,
         learning_rate=config.learning_rate,
         warmup_ratio=config.warmup_ratio,
         weight_decay=config.weight_decay,
         lr_scheduler_type="linear",
-        gradient_checkpointing=True,
+        gradient_checkpointing=runtime_settings.gradient_checkpointing,
         bf16=bf16,
         fp16=fp16,
+        tf32=runtime_settings.tf32,
+        auto_find_batch_size=config.per_device_batch_size == 0,
         logging_strategy="steps",
         logging_steps=config.logging_steps,
         eval_strategy="steps",
         eval_steps=config.eval_steps,
         save_strategy="steps",
         save_steps=config.save_steps,
-        save_total_limit=2,
+        save_total_limit=config.local_checkpoint_limit,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
@@ -861,9 +954,35 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--new-vocabulary-tokens", type=int, default=16_000)
     parser.add_argument("--tokenizer-max-documents", type=int, default=200_000)
     parser.add_argument("--max-steps", type=int, default=100_000)
-    parser.add_argument("--per-device-batch-size", type=int, default=8)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    parser.add_argument(
+        "--checkpoint-every-steps",
+        type=int,
+        default=2_000,
+        help="Save/evaluate once per this many optimizer steps.",
+    )
+    parser.add_argument("--logging-steps", type=int, default=50)
+    parser.add_argument("--local-checkpoint-limit", type=int, default=1)
+    parser.add_argument("--remote-checkpoint-limit", type=int, default=2)
+    parser.add_argument(
+        "--per-device-batch-size",
+        type=int,
+        default=0,
+        help="Physical GPU batch size; 0 selects it from available GPU memory.",
+    )
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=0,
+        help="Accumulation passes; 0 targets an effective batch of at least 64.",
+    )
+    parser.add_argument(
+        "--gradient-checkpointing",
+        choices=("auto", "on", "off"),
+        default="auto",
+        help="Auto enables it only on GPUs with less than 16 GiB.",
+    )
     parser.add_argument("--cache-max-gb", type=float, default=4.0)
+    parser.add_argument("--parquet-read-batch-rows", type=int, default=32)
     parser.add_argument("--dataloader-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-resume", action="store_true")
@@ -885,9 +1004,16 @@ def main() -> None:
         new_vocabulary_tokens=args.new_vocabulary_tokens,
         tokenizer_max_documents=args.tokenizer_max_documents,
         max_steps=args.max_steps,
+        save_steps=args.checkpoint_every_steps,
+        eval_steps=args.checkpoint_every_steps,
+        logging_steps=args.logging_steps,
+        local_checkpoint_limit=args.local_checkpoint_limit,
+        remote_checkpoint_limit=args.remote_checkpoint_limit,
         per_device_batch_size=args.per_device_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        gradient_checkpointing=args.gradient_checkpointing,
         cache_max_gb=args.cache_max_gb,
+        parquet_read_batch_rows=args.parquet_read_batch_rows,
         dataloader_workers=args.dataloader_workers,
         seed=args.seed,
         resume=not args.no_resume,
