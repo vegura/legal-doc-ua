@@ -174,22 +174,35 @@ def arrow_type_contract(data_type: pa.DataType) -> dict[str, Any]:
     if pa.types.is_list(data_type) or pa.types.is_large_list(data_type):
         return {
             "type": ["array", "null"],
-            "items": arrow_type_contract(data_type.value_type),
+            "items": arrow_field_contract(data_type.value_field),
         }
     if pa.types.is_struct(data_type):
         properties = {
-            child.name: arrow_type_contract(child.type)
+            child.name: arrow_field_contract(child)
             for child in data_type
         }
         return {
             "type": ["object", "null"],
             "properties": properties,
-            "required": list(properties),
+            "required": [
+                child.name for child in data_type if not child.nullable
+            ],
             "additionalProperties": False,
         }
     raise TypeError(
         f"Unsupported prompt-dependent Arrow type: {data_type}"
     )
+
+
+def arrow_field_contract(field: pa.Field) -> dict[str, Any]:
+    contract = arrow_type_contract(field.type)
+    if not field.nullable:
+        allowed_types = contract.get("type")
+        if isinstance(allowed_types, list):
+            contract["type"] = [
+                value for value in allowed_types if value != "null"
+            ]
+    return contract
 
 
 def build_paragraph_response_contract(
@@ -229,13 +242,17 @@ def build_response_contract(
     extraction_schema: pa.Schema,
 ) -> dict[str, Any]:
     properties = {
-        field.name: arrow_type_contract(field.type)
+        field.name: arrow_field_contract(field)
         for field in extraction_schema
     }
     return {
         "type": "object",
         "properties": properties,
-        "required": list(properties),
+        "required": [
+            field.name
+            for field in extraction_schema
+            if not field.nullable
+        ],
         "additionalProperties": False,
     }
 
@@ -415,6 +432,54 @@ def validate_arrow_value(
     raise TypeError(f"Unsupported Arrow type at {path}: {data_type}")
 
 
+def normalize_arrow_value(
+    value: Any,
+    arrow_field: pa.Field,
+    path: str,
+) -> Any:
+    if value is None:
+        if not arrow_field.nullable:
+            raise ValueError(f"{path} cannot be null")
+        return None
+
+    data_type = arrow_field.type
+    if pa.types.is_struct(data_type):
+        if not isinstance(value, Mapping):
+            raise TypeError(f"{path} must be an object")
+        expected = {child.name for child in data_type}
+        unexpected = set(value) - expected
+        if unexpected:
+            raise ValueError(
+                f"{path} has unexpected fields: {sorted(unexpected)}"
+            )
+        normalized: dict[str, Any] = {}
+        for child in data_type:
+            child_path = f"{path}.{child.name}"
+            if child.name in value:
+                normalized[child.name] = normalize_arrow_value(
+                    value[child.name],
+                    child,
+                    child_path,
+                )
+            elif child.nullable:
+                normalized[child.name] = None
+            else:
+                raise ValueError(f"{child_path} is required")
+        return normalized
+    if pa.types.is_list(data_type) or pa.types.is_large_list(data_type):
+        if not isinstance(value, list):
+            raise TypeError(f"{path} must be a list")
+        return [
+            normalize_arrow_value(
+                item,
+                data_type.value_field,
+                f"{path}[{index}]",
+            )
+            for index, item in enumerate(value)
+        ]
+    return value
+
+
 def validate_model_payload(
     payload: Mapping[str, Any],
     targets: Sequence[Paragraph],
@@ -511,24 +576,35 @@ def validate_document_payload(
     extraction_schema: pa.Schema,
 ) -> tuple[dict[str, Any], dict[int, int]]:
     expected_fields = set(extraction_schema.names)
-    if set(payload) != expected_fields:
+    unexpected = set(payload) - expected_fields
+    if unexpected:
         raise ValueError(
-            "Document fields differ from the configured schema: "
-            f"expected {sorted(expected_fields)}, got {sorted(payload)}"
+            f"Document has unexpected fields: {sorted(unexpected)}"
         )
+    normalized: dict[str, Any] = {}
     for schema_field in extraction_schema:
+        if schema_field.name in payload:
+            normalized[schema_field.name] = normalize_arrow_value(
+                payload[schema_field.name],
+                schema_field,
+                schema_field.name,
+            )
+        elif schema_field.nullable:
+            normalized[schema_field.name] = None
+        else:
+            raise ValueError(f"{schema_field.name} is required")
         validate_arrow_value(
-            payload[schema_field.name],
+            normalized[schema_field.name],
             schema_field,
             schema_field.name,
         )
 
-    if "paragraph_classification" not in payload:
+    if "paragraph_classification" not in normalized:
         raise ValueError(
             "Document extraction schema must contain "
             "paragraph_classification"
         )
-    classifications = payload["paragraph_classification"]
+    classifications = normalized["paragraph_classification"]
     if not isinstance(classifications, list):
         raise TypeError("paragraph_classification must be a list")
 
@@ -569,7 +645,7 @@ def validate_document_payload(
             current_section_id += 1
             previous_label = label
         section_ids[paragraph_id] = current_section_id
-    return dict(payload), section_ids
+    return normalized, section_ids
 
 
 def generate_validated_batch(

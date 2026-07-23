@@ -203,9 +203,12 @@ def run_self_checks() -> None:
             {"paragraph_index": 1, "section": "introductory"},
             {"paragraph_index": 2, "section": "reasoning"},
         ],
-        "introductory_part": None,
-        "reasoning_part": None,
-        "operative_part": None,
+        "operative_part": {
+            "guilt_status": "guilty",
+            "conviction_operative": {
+                "conviction_decision": "Found guilty"
+            },
+        },
     }
 
     def model_pipe(*, text, **_kwargs):
@@ -232,6 +235,16 @@ def run_self_checks() -> None:
     assert all(
         row["decision_stage"] == "final"
         for row in full_document_rows
+    )
+    normalized_operative = full_document_rows[0]["operative_part"]
+    assert normalized_operative["final_sentence"] is None
+    assert normalized_operative["juvenile_educator_decision"] is None
+    assert normalized_operative["probation"] is None
+    assert (
+        normalized_operative["conviction_operative"][
+            "conviction_decision"
+        ]
+        == "Found guilty"
     )
 
     def assert_invalid(candidate: dict[str, Any]) -> None:
