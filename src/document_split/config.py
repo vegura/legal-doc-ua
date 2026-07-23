@@ -10,7 +10,7 @@ PROJECT_ID = "lab-test-project-1-305710"
 BIGQUERY_TABLE = f"{PROJECT_ID}.court_data_2024.document_data"
 SOURCE_BUCKET = "court_data_2024"
 DESTINATION_BUCKET = "court_data_2024_structured"
-INFO_VERSION = "info_version_1"
+INFO_VERSION = "info_version_2"
 
 MODEL_ID = "lapa-llm/lapa-v0.1.2-instruct"
 MODEL_REVISION: str | None = None

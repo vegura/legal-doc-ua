@@ -197,14 +197,24 @@ def run_self_checks() -> None:
     assert table.to_pylist() == document_rows
 
     model_calls: list[list[dict[str, Any]]] = []
+    document_payload = {
+        "decision_stage": "final",
+        "paragraph_classification": [
+            {"paragraph_index": 1, "section": "introductory"},
+            {"paragraph_index": 2, "section": "reasoning"},
+        ],
+        "introductory_part": None,
+        "reasoning_part": None,
+        "operative_part": None,
+    }
 
     def model_pipe(*, text, **_kwargs):
         model_calls.append(text)
-        return [{"generated_text": json.dumps(payload)}]
+        return [{"generated_text": json.dumps(document_payload)}]
 
     full_document_settings = ExtractionSettings(
         prompt="test prompt",
-        extraction_schema=_VALIDATION_SCHEMA,
+        extraction_schema=CRIMINAL_SCHEMA,
         target_chunk_tokens=1,
     )
     full_document_rows = extract_document_rows(
@@ -218,6 +228,11 @@ def run_self_checks() -> None:
     sent_document = model_calls[0][1]["content"][0]["text"]
     assert all(paragraph.text in sent_document for paragraph in targets)
     assert len(full_document_rows) == len(targets)
+    assert [row["section_id"] for row in full_document_rows] == [0, 1]
+    assert all(
+        row["decision_stage"] == "final"
+        for row in full_document_rows
+    )
 
     def assert_invalid(candidate: dict[str, Any]) -> None:
         try:

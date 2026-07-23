@@ -44,14 +44,13 @@ def build_manifest_identity(
             "dtype": "bfloat16",
             "task": "image-text-to-text",
         },
-        "chunking": {
-            "row_unit": "paragraph",
+        "document_processing": {
+            "model_input_unit": "complete_document",
+            "model_response_unit": "document",
+            "parquet_row_unit": "paragraph",
             "paragraph_ids_start_at": 1,
             "section_ids_start_at": 0,
-            "target_chunk_tokens": extraction.target_chunk_tokens,
-            "overlap_tokens": extraction.overlap_tokens,
             "model_context_tokens": extraction.model_context_tokens,
-            "never_split_target_paragraph": True,
         },
         "generation": {
             "max_new_tokens": extraction.max_new_tokens,
