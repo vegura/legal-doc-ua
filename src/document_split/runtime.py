@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import torch
 from google.cloud import bigquery, storage
 from huggingface_hub import login
-from transformers import pipeline
 
 from .config import ExtractionSettings, StorageSettings
 
@@ -55,6 +54,11 @@ def load_extraction_model(
     revision: str,
     hf_token: str | None,
 ):
+    # Keep optional Transformers media backends out of ordinary package
+    # imports. Colab may ship an incompatible TorchAudio build even though this
+    # document parser sends text only.
+    from transformers import pipeline
+
     if not torch.cuda.is_available():
         raise RuntimeError("A CUDA-enabled Colab runtime is required")
 
@@ -70,4 +74,3 @@ def load_extraction_model(
     if tokenizer is None:
         raise RuntimeError("The loaded pipeline did not expose a tokenizer")
     return model_pipe, tokenizer
-
