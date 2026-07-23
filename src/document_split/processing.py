@@ -480,6 +480,49 @@ def normalize_arrow_value(
     return value
 
 
+def normalize_known_document_layout(
+    payload: Mapping[str, Any],
+    extraction_schema: pa.Schema,
+) -> dict[str, Any]:
+    normalized_payload = dict(payload)
+    operative_value = normalized_payload.get("operative_part")
+    if not isinstance(operative_value, Mapping):
+        return normalized_payload
+
+    if "operative_part" not in extraction_schema.names:
+        return normalized_payload
+    operative_field = extraction_schema.field("operative_part")
+    if not pa.types.is_struct(operative_field.type):
+        return normalized_payload
+    operative_fields = {field.name for field in operative_field.type}
+
+    conviction_field = operative_field.type.field("conviction_operative")
+    if not pa.types.is_struct(conviction_field.type):
+        return normalized_payload
+    conviction_fields = {field.name for field in conviction_field.type}
+
+    operative = dict(operative_value)
+    conviction_value = operative.get("conviction_operative")
+    if not isinstance(conviction_value, Mapping):
+        return normalized_payload
+    conviction = dict(conviction_value)
+
+    misplaced = (set(conviction) - conviction_fields) & operative_fields
+    for field_name in misplaced:
+        nested_value = conviction.pop(field_name)
+        if field_name in operative:
+            if operative[field_name] != nested_value:
+                raise ValueError(
+                    f"Conflicting values for operative_part.{field_name}"
+                )
+        else:
+            operative[field_name] = nested_value
+
+    operative["conviction_operative"] = conviction
+    normalized_payload["operative_part"] = operative
+    return normalized_payload
+
+
 def validate_model_payload(
     payload: Mapping[str, Any],
     targets: Sequence[Paragraph],
@@ -575,6 +618,7 @@ def validate_document_payload(
     paragraphs: Sequence[Paragraph],
     extraction_schema: pa.Schema,
 ) -> tuple[dict[str, Any], dict[int, int]]:
+    payload = normalize_known_document_layout(payload, extraction_schema)
     expected_fields = set(extraction_schema.names)
     unexpected = set(payload) - expected_fields
     if unexpected:

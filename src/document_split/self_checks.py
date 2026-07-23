@@ -206,7 +206,9 @@ def run_self_checks() -> None:
         "operative_part": {
             "guilt_status": "guilty",
             "conviction_operative": {
-                "conviction_decision": "Found guilty"
+                "conviction_decision": "Found guilty",
+                "final_sentence": "Fine",
+                "probation": None,
             },
         },
     }
@@ -237,8 +239,8 @@ def run_self_checks() -> None:
         for row in full_document_rows
     )
     normalized_operative = full_document_rows[0]["operative_part"]
-    assert normalized_operative["final_sentence"] is None
     assert normalized_operative["juvenile_educator_decision"] is None
+    assert normalized_operative["final_sentence"] == "Fine"
     assert normalized_operative["probation"] is None
     assert (
         normalized_operative["conviction_operative"][

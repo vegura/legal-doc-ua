@@ -10,7 +10,7 @@ PROJECT_ID = "lab-test-project-1-305710"
 BIGQUERY_TABLE = f"{PROJECT_ID}.court_data_2024.document_data"
 SOURCE_BUCKET = "court_data_2024"
 DESTINATION_BUCKET = "court_data_2024_structured"
-INFO_VERSION = "info_version_3"
+INFO_VERSION = "info_version_5"
 
 MODEL_ID = "lapa-llm/lapa-v0.1.2-instruct"
 MODEL_REVISION: str | None = None
@@ -1037,6 +1037,11 @@ CRIMINAL_PROMPT = """
 * `law_article`;
 * `punishment`.
 
+## Поля безпосередньо в `operative_part`
+
+Усі поля нижче є безпосередніми дочірніми полями `operative_part`.
+Не вкладай їх у `conviction_operative` або `acquittal_operative`.
+
 ### `final_sentence`
 
 Остаточне покарання, визначене судом.
@@ -1496,7 +1501,7 @@ class ExtractionSettings:
     overlap_tokens: int = 256
     model_context_tokens: int = 131_072
     max_new_tokens: int = 8_192
-    json_retries: int = 2
+    json_retries: int = 0
     parquet_compression: str = "zstd"
 
     @property
