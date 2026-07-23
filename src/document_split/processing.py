@@ -265,7 +265,8 @@ in {target_ids}, in this order.
 
 Return one document-level JSON object matching this contract. Include every
 configured field, using null when the prompt does not support a value. Do not
-add keys, commentary, or Markdown fences.
+add keys, commentary, or Markdown fences. Return compact JSON without
+indentation or unnecessary whitespace.
 JSON CONTRACT:
 {contract}
 """
@@ -698,6 +699,9 @@ def generate_validated_document(
         "Model did not return schema-valid JSON after "
         f"{settings.json_retries + 1} attempts. Last error: "
         f"{type(last_error).__name__}: {last_error}. "
+        f"Response characters: {len(last_response)}. "
+        f"Ended with closing brace: "
+        f"{last_response.rstrip().endswith('}')}. "
         f"Response preview: {preview!r}"
     ) from last_error
 
