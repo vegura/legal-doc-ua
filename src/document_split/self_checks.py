@@ -14,17 +14,51 @@ from .cloud import (
 )
 from .config import (
     BASE_SCHEMA,
-    EXAMPLE_EXTRACTION_SCHEMA,
+    CRIMINAL_SCHEMA,
     ExtractionSettings,
     StorageSettings,
 )
 from .processing import (
     Paragraph,
     build_paragraph_batches,
+    extract_document_rows,
     parse_json_response,
     rows_to_parquet_bytes,
     rtf_bytes_to_paragraphs,
     validate_model_payload,
+)
+
+_VALIDATION_SCHEMA = pa.schema(
+    [
+        pa.field(
+            "legal_references",
+            pa.list_(
+                pa.struct(
+                    [
+                        pa.field("act_id", pa.int32()),
+                        pa.field("article", pa.int16()),
+                        pa.field("part", pa.int16()),
+                        pa.field("paragraph", pa.int16()),
+                    ]
+                )
+            ),
+        ),
+        pa.field(
+            "entities",
+            pa.list_(
+                pa.struct(
+                    [
+                        pa.field("entity_type", pa.int8()),
+                        pa.field("start_offset", pa.int32()),
+                        pa.field("end_offset", pa.int32()),
+                        pa.field("normalized_entity_id", pa.string()),
+                    ]
+                )
+            ),
+        ),
+        pa.field("labels", pa.list_(pa.int16())),
+        pa.field("split", pa.int8()),
+    ]
 )
 
 
@@ -38,9 +72,16 @@ class _WhitespaceTokenizer:
 
 
 def run_self_checks() -> None:
+    reasoning_type = CRIMINAL_SCHEMA.field("reasoning_part").type
+    argument_type = reasoning_type.field("court_reasoning_arguments").type
+    legal_references_type = argument_type.value_type.field(
+        "legal_references"
+    ).type
+    assert legal_references_type == pa.list_(pa.string())
+
     example_settings = ExtractionSettings(
         prompt="test prompt",
-        extraction_schema=EXAMPLE_EXTRACTION_SCHEMA,
+        extraction_schema=_VALIDATION_SCHEMA,
     )
     example_settings.validate(production=True)
     assert example_settings.output_schema.names[:5] == BASE_SCHEMA.names
@@ -126,7 +167,7 @@ def run_self_checks() -> None:
     validated, last_section = validate_model_payload(
         payload,
         targets,
-        EXAMPLE_EXTRACTION_SCHEMA,
+        _VALIDATION_SCHEMA,
         previous_section_id=None,
     )
     assert last_section == 1
@@ -142,7 +183,7 @@ def run_self_checks() -> None:
                 "text": paragraph.text,
                 **{
                     name: extracted[name]
-                    for name in EXAMPLE_EXTRACTION_SCHEMA.names
+                    for name in _VALIDATION_SCHEMA.names
                 },
             }
         )
@@ -155,12 +196,35 @@ def run_self_checks() -> None:
     assert table.schema == example_settings.output_schema
     assert table.to_pylist() == document_rows
 
+    model_calls: list[list[dict[str, Any]]] = []
+
+    def model_pipe(*, text, **_kwargs):
+        model_calls.append(text)
+        return [{"generated_text": json.dumps(payload)}]
+
+    full_document_settings = ExtractionSettings(
+        prompt="test prompt",
+        extraction_schema=_VALIDATION_SCHEMA,
+        target_chunk_tokens=1,
+    )
+    full_document_rows = extract_document_rows(
+        "123",
+        targets,
+        model_pipe,
+        tokenizer,
+        full_document_settings,
+    )
+    assert len(model_calls) == 1
+    sent_document = model_calls[0][1]["content"][0]["text"]
+    assert all(paragraph.text in sent_document for paragraph in targets)
+    assert len(full_document_rows) == len(targets)
+
     def assert_invalid(candidate: dict[str, Any]) -> None:
         try:
             validate_model_payload(
                 candidate,
                 targets,
-                EXAMPLE_EXTRACTION_SCHEMA,
+                _VALIDATION_SCHEMA,
                 previous_section_id=None,
             )
         except (TypeError, ValueError):
@@ -227,4 +291,3 @@ def run_self_checks() -> None:
 
 if __name__ == "__main__":
     run_self_checks()
-

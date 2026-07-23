@@ -1118,7 +1118,7 @@ CRIMINAL_PROMPT = """
 
 Не вважай випробуванням звичайне звільнення від покарання, амністію, закінчення строків давності або іншу підставу, якщо суд прямо не застосував звільнення від відбування покарання з випробуванням.
 
-# 7. Формат відповіді
+# 7. Канонічна JSON-схема відповіді
 
 Поверни виключно JSON такої структури:
 
@@ -1154,6 +1154,16 @@ CRIMINAL_PROMPT = """
 },
 "reasoning_part": {
 "guilt_status": "guilty | acquitted | mixed | undetermined",
+"court_reasoning_arguments": [
+{
+"paragraph_index": 1,
+"argument_type": null,
+"argument": null,
+"legal_references": [
+"ч. 2 ст. 185 КК України"
+]
+}
+],
 "acquittal_reasoning": {
 "unproven_charge": null,
 "acquittal_grounds": null,
@@ -1225,7 +1235,8 @@ CRIMINAL_PROMPT = """
 },
 "punishment": null
 }
-],
+]
+},
 "final_sentence": null,
 "sentence_start": null,
 "compulsory_treatment_decision": null,
@@ -1257,7 +1268,6 @@ CRIMINAL_PROMPT = """
 "probation_period": null,
 "obligations": null,
 "supervising_persons_or_authorities": null
-}
 }
 }
 }
@@ -1335,7 +1345,7 @@ CRIMINAL_SCHEMA = pa.schema([
                 pa.field("paragraph_index", pa.int32()),
                 pa.field("argument_type", pa.string()),
                 pa.field("argument", pa.string()),
-                pa.field("legal_references", pa.string()),
+                pa.field("legal_references", pa.list_(pa.string())),
             ])
         )),
         pa.field("acquittal_reasoning", pa.struct([
@@ -1360,7 +1370,7 @@ CRIMINAL_SCHEMA = pa.schema([
                 pa.field("adoption_date", pa.string()),
             ]))),
             pa.field("supporting_evidence", pa.list_(pa.struct([
-                pa.field("paragraph_index", pa.string()),
+                pa.field("paragraph_index", pa.int32()),
                 pa.field("evidence_type", pa.string()),
                 pa.field("evidence", pa.string()),
                 pa.field("established_circumstance", pa.string()),
@@ -1468,7 +1478,7 @@ CRIMINAL_SCHEMA = pa.schema([
         ]))),
         pa.field("release_from_punishment", pa.string()),
         pa.field("probation", pa.struct([
-            pa.field("applied", pa.string()),
+            pa.field("applied", pa.bool_()),
             pa.field("probation_period", pa.string()),
             pa.field("obligations", pa.string()),
             pa.field("supervising_persons_or_authorities", pa.string()),
@@ -1560,4 +1570,3 @@ DEFAULT_EXTRACTION_SETTINGS = ExtractionSettings(
     extraction_schema=CRIMINAL_SCHEMA,
 )
 DEFAULT_STORAGE_SETTINGS = StorageSettings()
-

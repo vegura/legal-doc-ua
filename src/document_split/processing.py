@@ -255,7 +255,7 @@ def build_messages(
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    user_text = f"""The following text is part of one court document.
+    user_text = f"""The following text is the complete court document.
 
 CONTEXT ONLY - use it for continuity, but do not return rows for it:
 {context_text}
@@ -583,53 +583,44 @@ def extract_document_rows(
     if not paragraphs:
         raise ValueError(f"Document {document_id} contains no paragraphs")
 
-    batches = build_paragraph_batches(
-        paragraphs,
-        tokenizer,
-        settings.target_chunk_tokens,
-        settings.overlap_tokens,
+    # Document-level extraction requires the model to see every paragraph in a
+    # single request. The context-limit check in generate_validated_batch fails
+    # explicitly if the complete document and response budget do not fit.
+    batch = ParagraphBatch(context=(), targets=tuple(paragraphs))
+    messages = build_messages(
+        settings.prompt,
+        settings.extraction_schema,
+        batch,
+        known_section_ids={},
     )
-    known_section_ids: dict[int, int] = {}
+    extracted_rows, _ = generate_validated_batch(
+        model_pipe,
+        tokenizer,
+        messages,
+        batch.targets,
+        settings.extraction_schema,
+        previous_section_id=None,
+        settings=settings,
+    )
+    extracted_by_id = {
+        row["paragraph_id"]: row for row in extracted_rows
+    }
     rows: list[dict[str, Any]] = []
-    previous_section_id: int | None = None
-
-    for batch in batches:
-        messages = build_messages(
-            settings.prompt,
-            settings.extraction_schema,
-            batch,
-            known_section_ids,
+    for paragraph in paragraphs:
+        extracted = extracted_by_id[paragraph.paragraph_id]
+        rows.append(
+            {
+                "document_id": str(document_id),
+                "paragraph_id": paragraph.paragraph_id,
+                "paragraph_order": paragraph.paragraph_order,
+                "section_id": extracted["section_id"],
+                "text": paragraph.text,
+                **{
+                    name: extracted[name]
+                    for name in settings.extraction_schema.names
+                },
+            }
         )
-        extracted_rows, previous_section_id = generate_validated_batch(
-            model_pipe,
-            tokenizer,
-            messages,
-            batch.targets,
-            settings.extraction_schema,
-            previous_section_id,
-            settings,
-        )
-        extracted_by_id = {
-            row["paragraph_id"]: row for row in extracted_rows
-        }
-        for paragraph in batch.targets:
-            extracted = extracted_by_id[paragraph.paragraph_id]
-            known_section_ids[paragraph.paragraph_id] = extracted[
-                "section_id"
-            ]
-            rows.append(
-                {
-                    "document_id": str(document_id),
-                    "paragraph_id": paragraph.paragraph_id,
-                    "paragraph_order": paragraph.paragraph_order,
-                    "section_id": extracted["section_id"],
-                    "text": paragraph.text,
-                    **{
-                        name: extracted[name]
-                        for name in settings.extraction_schema.names
-                    },
-                }
-            )
 
     if len(rows) != len(paragraphs):
         raise AssertionError(
@@ -678,4 +669,3 @@ def parse_document_to_parquet(
         ),
         len(rows),
     )
-
