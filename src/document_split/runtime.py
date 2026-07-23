@@ -70,6 +70,13 @@ def load_extraction_model(
         device_map="auto",
         dtype=torch.bfloat16,
     )
+    # Configure generation on the pipeline itself. Passing these options to an
+    # ImageTextToTextPipeline call can route them to the processor in recent
+    # Transformers releases.
+    model_pipe.generation_config.max_new_tokens = settings.max_new_tokens
+    model_pipe.generation_config.max_length = None
+    model_pipe.generation_config.do_sample = False
+
     tokenizer = getattr(model_pipe, "tokenizer", None)
     if tokenizer is None:
         raise RuntimeError("The loaded pipeline did not expose a tokenizer")

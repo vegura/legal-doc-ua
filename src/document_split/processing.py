@@ -529,8 +529,7 @@ def generate_validated_batch(
     for attempt in range(settings.json_retries + 1):
         result = model_pipe(
             text=attempt_messages,
-            max_new_tokens=settings.max_new_tokens,
-            do_sample=False,
+            return_full_text=False,
         )
         response_text = extract_generated_text(result)
         try:
