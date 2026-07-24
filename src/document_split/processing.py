@@ -810,14 +810,21 @@ def generate_validated_document(
                     ],
                 },
             ]
+    response_is_complete = last_response.rstrip().endswith("}")
     preview = last_response[:500].replace("\n", "\\n")
+    truncation_hint = (
+        f" Response appears truncated at max_new_tokens="
+        f"{settings.max_new_tokens}; increase the generation budget."
+        if not response_is_complete
+        else ""
+    )
     raise RuntimeError(
         "Model did not return schema-valid JSON after "
         f"{settings.json_retries + 1} attempts. Last error: "
         f"{type(last_error).__name__}: {last_error}. "
         f"Response characters: {len(last_response)}. "
-        f"Ended with closing brace: "
-        f"{last_response.rstrip().endswith('}')}. "
+        f"Ended with closing brace: {response_is_complete}."
+        f"{truncation_hint} "
         f"Response preview: {preview!r}"
     ) from last_error
 

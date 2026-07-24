@@ -193,7 +193,7 @@ def run_self_checks() -> None:
         example_settings.output_schema,
         "zstd",
     )
-    table = pq.read_table(io.BytesIO(parquet_bytes))
+    table = pq.read_table(io.BytesIO(parquet_bytes), use_threads=False)
     assert table.schema == example_settings.output_schema
     assert table.to_pylist() == document_rows
 
@@ -256,7 +256,10 @@ def run_self_checks() -> None:
         tokenizer,
         full_document_settings,
     )
-    parsed_table = pq.read_table(io.BytesIO(parsed_parquet))
+    parsed_table = pq.read_table(
+        io.BytesIO(parsed_parquet),
+        use_threads=False,
+    )
     assert paragraph_count == 2
     assert parsed_table.num_rows == 1
     assert parsed_table.schema == full_document_settings.output_schema

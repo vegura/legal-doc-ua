@@ -10,7 +10,7 @@ PROJECT_ID = "lab-test-project-1-305710"
 BIGQUERY_TABLE = f"{PROJECT_ID}.court_data_2024.document_data"
 SOURCE_BUCKET = "court_data_2024"
 DESTINATION_BUCKET = "court_data_2024_structured"
-INFO_VERSION = "info_version_6"
+INFO_VERSION = "info_version_7"
 
 MODEL_ID = "lapa-llm/lapa-v0.1.2-instruct"
 MODEL_REVISION: str | None = None
@@ -1495,7 +1495,7 @@ class ExtractionSettings:
     model_id: str = MODEL_ID
     model_revision: str | None = MODEL_REVISION
     model_context_tokens: int = 131_072
-    max_new_tokens: int = 8_192
+    max_new_tokens: int = 16_384
     json_retries: int = 0
     parquet_compression: str = "zstd"
 
