@@ -357,7 +357,23 @@ def parse_json_response(response_text: str) -> dict[str, Any]:
     )
     if fence:
         cleaned = fence.group(1).strip()
-    payload = json.loads(cleaned)
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Never repair a response cut off by the generation limit: doing so
+        # could turn an incomplete extraction into an apparently valid record.
+        # For a complete object, repair common deterministic model defects such
+        # as an unescaped quote or a missing comma, then apply the unchanged
+        # PyArrow-backed validator to the repaired value.
+        if not cleaned.rstrip().endswith("}"):
+            raise
+        from json_repair import repair_json
+
+        payload = repair_json(
+            cleaned,
+            return_objects=True,
+            skip_json_loads=True,
+        )
     if not isinstance(payload, dict):
         raise ValueError("The model response must be a JSON object")
     return payload

@@ -311,6 +311,21 @@ def run_self_checks() -> None:
     )
     assert fenced == {"paragraphs": []}
 
+    repaired = parse_json_response(
+        '{"decision":"Визнати "ОСОБА_1" винним" "final":true}'
+    )
+    assert repaired == {
+        "decision": 'Визнати "ОСОБА_1" винним',
+        "final": True,
+    }
+
+    try:
+        parse_json_response('{"decision":"truncated')
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError("A truncated JSON response was repaired")
+
     assert source_object_path(2, "121118598") == "2/121118598.rtf"
     assert (
         destination_object_path(
