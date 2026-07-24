@@ -47,7 +47,7 @@ def build_manifest_identity(
         "document_processing": {
             "model_input_unit": "complete_document",
             "model_response_unit": "document",
-            "parquet_row_unit": "paragraph",
+            "parquet_row_unit": "document",
             "paragraph_ids_start_at": 1,
             "section_ids_start_at": 0,
             "model_context_tokens": extraction.model_context_tokens,

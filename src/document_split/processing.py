@@ -43,14 +43,10 @@ def normalize_plain_text(text: str) -> str:
 
 
 def split_plain_text_into_paragraphs(text: str) -> list[str]:
-    pieces = [
-        piece.strip()
-        for piece in re.split(r"\n\s*\n+", text)
-        if piece.strip()
-    ]
-    return [
-        re.sub(r"\s*\n\s*", " ", piece).strip() for piece in pieces
-    ]
+    # striprtf renders each RTF ``\par`` as a newline. Treat every non-empty
+    # rendered line as a paragraph so the prompt's paragraph identifiers match
+    # the source document instead of collapsing many RTF paragraphs together.
+    return [line.strip() for line in text.split("\n") if line.strip()]
 
 
 def rtf_bytes_to_paragraphs(rtf_bytes: bytes) -> list[Paragraph]:
@@ -847,7 +843,7 @@ def extract_document_rows(
         batch,
         known_section_ids={},
     )
-    document_extraction, section_ids = generate_validated_document(
+    document_extraction, _section_ids = generate_validated_document(
         model_pipe,
         tokenizer,
         messages,
@@ -855,27 +851,20 @@ def extract_document_rows(
         settings.extraction_schema,
         settings=settings,
     )
-    rows: list[dict[str, Any]] = []
-    for paragraph in paragraphs:
-        rows.append(
-            {
-                "document_id": str(document_id),
-                "paragraph_id": paragraph.paragraph_id,
-                "paragraph_order": paragraph.paragraph_order,
-                "section_id": section_ids[paragraph.paragraph_id],
-                "text": paragraph.text,
-                **{
-                    name: document_extraction[name]
-                    for name in settings.extraction_schema.names
-                },
-            }
-        )
-
-    if len(rows) != len(paragraphs):
-        raise AssertionError(
-            "Not every paragraph received an extraction row"
-        )
-    return rows
+    # Paragraphs are an internal prompt/indexing mechanism. Persist the complete
+    # document and its single document-level extraction as exactly one row.
+    return [
+        {
+            "document_id": str(document_id),
+            "text": "\n\n".join(
+                paragraph.text for paragraph in paragraphs
+            ),
+            **{
+                name: document_extraction[name]
+                for name in settings.extraction_schema.names
+            },
+        }
+    ]
 
 
 def rows_to_parquet_bytes(
@@ -916,5 +905,5 @@ def parse_document_to_parquet(
             settings.output_schema,
             settings.parquet_compression,
         ),
-        len(rows),
+        len(paragraphs),
     )

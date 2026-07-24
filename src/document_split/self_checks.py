@@ -22,6 +22,7 @@ from .processing import (
     Paragraph,
     build_paragraph_batches,
     extract_document_rows,
+    parse_document_to_parquet,
     parse_json_response,
     rows_to_parquet_bytes,
     rtf_bytes_to_paragraphs,
@@ -84,7 +85,10 @@ def run_self_checks() -> None:
         extraction_schema=_VALIDATION_SCHEMA,
     )
     example_settings.validate(production=True)
-    assert example_settings.output_schema.names[:5] == BASE_SCHEMA.names
+    assert (
+        example_settings.output_schema.names[: len(BASE_SCHEMA.names)]
+        == BASE_SCHEMA.names
+    )
 
     reduced_schema = pa.schema(
         [pa.field("labels", pa.list_(pa.int16()))]
@@ -172,21 +176,18 @@ def run_self_checks() -> None:
     )
     assert last_section == 1
 
-    document_rows = []
-    for paragraph, extracted in zip(targets, validated):
-        document_rows.append(
-            {
-                "document_id": "123",
-                "paragraph_id": paragraph.paragraph_id,
-                "paragraph_order": paragraph.paragraph_order,
-                "section_id": extracted["section_id"],
-                "text": paragraph.text,
-                **{
-                    name: extracted[name]
-                    for name in _VALIDATION_SCHEMA.names
-                },
-            }
-        )
+    document_rows = [
+        {
+            "document_id": "123",
+            "text": "\n\n".join(
+                paragraph.text for paragraph in targets
+            ),
+            **{
+                name: validated[0][name]
+                for name in _VALIDATION_SCHEMA.names
+            },
+        }
+    ]
     parquet_bytes = rows_to_parquet_bytes(
         document_rows,
         example_settings.output_schema,
@@ -220,7 +221,6 @@ def run_self_checks() -> None:
     full_document_settings = ExtractionSettings(
         prompt="test prompt",
         extraction_schema=CRIMINAL_SCHEMA,
-        target_chunk_tokens=1,
     )
     full_document_rows = extract_document_rows(
         "123",
@@ -232,12 +232,12 @@ def run_self_checks() -> None:
     assert len(model_calls) == 1
     sent_document = model_calls[0][1]["content"][0]["text"]
     assert all(paragraph.text in sent_document for paragraph in targets)
-    assert len(full_document_rows) == len(targets)
-    assert [row["section_id"] for row in full_document_rows] == [0, 1]
-    assert all(
-        row["decision_stage"] == "final"
-        for row in full_document_rows
+    assert len(full_document_rows) == 1
+    assert full_document_rows[0]["document_id"] == "123"
+    assert full_document_rows[0]["text"] == "\n\n".join(
+        paragraph.text for paragraph in targets
     )
+    assert full_document_rows[0]["decision_stage"] == "final"
     normalized_operative = full_document_rows[0]["operative_part"]
     assert normalized_operative["juvenile_educator_decision"] is None
     assert normalized_operative["final_sentence"] == "Fine"
@@ -248,6 +248,22 @@ def run_self_checks() -> None:
         ]
         == "Found guilty"
     )
+
+    parsed_parquet, paragraph_count = parse_document_to_parquet(
+        "123",
+        sample_rtf,
+        model_pipe,
+        tokenizer,
+        full_document_settings,
+    )
+    parsed_table = pq.read_table(io.BytesIO(parsed_parquet))
+    assert paragraph_count == 2
+    assert parsed_table.num_rows == 1
+    assert parsed_table.schema == full_document_settings.output_schema
+    assert parsed_table.column("document_id").to_pylist() == ["123"]
+    assert parsed_table.column("text").to_pylist() == [
+        "Перший\n\nSecond paragraph"
+    ]
 
     def assert_invalid(candidate: dict[str, Any]) -> None:
         try:

@@ -10,7 +10,7 @@ PROJECT_ID = "lab-test-project-1-305710"
 BIGQUERY_TABLE = f"{PROJECT_ID}.court_data_2024.document_data"
 SOURCE_BUCKET = "court_data_2024"
 DESTINATION_BUCKET = "court_data_2024_structured"
-INFO_VERSION = "info_version_5"
+INFO_VERSION = "info_version_6"
 
 MODEL_ID = "lapa-llm/lapa-v0.1.2-instruct"
 MODEL_REVISION: str | None = None
@@ -1298,9 +1298,6 @@ the extraction schema. Return only the requested JSON object.
 BASE_SCHEMA = pa.schema(
     [
         pa.field("document_id", pa.string(), nullable=False),
-        pa.field("paragraph_id", pa.int32(), nullable=False),
-        pa.field("paragraph_order", pa.int32(), nullable=False),
-        pa.field("section_id", pa.int16(), nullable=False),
         pa.field("text", pa.string(), nullable=False),
     ]
 )
@@ -1497,8 +1494,6 @@ class ExtractionSettings:
     extraction_schema: pa.Schema
     model_id: str = MODEL_ID
     model_revision: str | None = MODEL_REVISION
-    target_chunk_tokens: int = 8_192
-    overlap_tokens: int = 256
     model_context_tokens: int = 131_072
     max_new_tokens: int = 8_192
     json_retries: int = 0
@@ -1526,12 +1521,6 @@ class ExtractionSettings:
             self.extraction_schema.names
         ):
             raise ValueError("Extraction field names must be unique")
-        if self.target_chunk_tokens <= 0 or self.overlap_tokens < 0:
-            raise ValueError("Chunk sizes must be positive")
-        if self.target_chunk_tokens >= self.model_context_tokens:
-            raise ValueError(
-                "target_chunk_tokens must be below the model context limit"
-            )
         if self.max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be positive")
         if self.json_retries < 0:
@@ -1547,7 +1536,7 @@ class StorageSettings:
     source_bucket: str = SOURCE_BUCKET
     destination_bucket: str = DESTINATION_BUCKET
     info_version: str = INFO_VERSION
-    justice_kinds: tuple[int, ...] = (1, 2, 3, 4, 5)
+    justice_kinds: tuple[int, ...] = (2,)
     bigquery_page_size: int = 1_000
     limit: int | None = None
     skip_existing: bool = True
