@@ -356,7 +356,7 @@ description = "Foreign Function Interface for Python calling C code."
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "(sys_platform == \"win32\" or sys_platform == \"emscripten\" or sys_platform != \"win32\" and sys_platform != \"emscripten\") and implementation_name == \"pypy\""
+markers = "implementation_name == \"pypy\" and (sys_platform == \"win32\" or sys_platform == \"emscripten\" or sys_platform != \"win32\" and sys_platform != \"emscripten\")"
 files = [
     {file = "cffi-2.1.0-cp310-cp310-macosx_10_15_x86_64.whl", hash = "sha256:b65f590ef2a44640f9a05dbb548a429b4ade77913ce683ac8b1480777658a6c0"},
     {file = "cffi-2.1.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:164bff1657b2a74f0b6d54e11c9b375bc97b931f2ca9c43fcf875838da1570dd"},
@@ -2047,6 +2047,22 @@ files = [
 ]
 
 [[package]]
+name = "json-repair"
+version = "0.61.7"
+description = "A package to repair broken json strings"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "sys_platform == \"win32\" or sys_platform == \"emscripten\" or sys_platform != \"win32\" and sys_platform != \"emscripten\""
+files = [
+    {file = "json_repair-0.61.7-py3-none-any.whl", hash = "sha256:45c99b8cffef404e846b60d3dc21fc6f0fd5a4595cebad169dfab083ffb8246a"},
+    {file = "json_repair-0.61.7.tar.gz", hash = "sha256:a3754543f050093efcda6c9ab00b20a236b5d082c8c622bc65b88fa74ff8d51f"},
+]
+
+[package.extras]
+schema = ["jsonschema (>=4.21) ; python_full_version < \"3.15.0a0\" or python_full_version >= \"3.15.0\"", "pydantic (>=2) ; python_full_version < \"3.15.0a0\" or python_full_version >= \"3.15.0\""]
+
+[[package]]
 name = "json5"
 version = "0.15.0"
 description = "A Python implementation of the JSON5 data format."
@@ -3382,7 +3398,7 @@ description = "cuFile GPUDirect libraries"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "sys_platform == \"linux\" and platform_system == \"Linux\""
+markers = "platform_system == \"Linux\" and sys_platform == \"linux\""
 files = [
     {file = "nvidia_cufile-1.15.1.6-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:08a3ecefae5a01c7f5117351c64f17c7c62efa5fffdbe24fc7d298da19cd0b44"},
     {file = "nvidia_cufile-1.15.1.6-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:bdc0deedc61f548bddf7733bdc216456c2fdb101d020e1ab4b88d232d5e2f6d1"},
@@ -3646,7 +3662,7 @@ description = "A decorator to automatically detect mismatch when overriding a me
 optional = false
 python-versions = ">=3.6"
 groups = ["main"]
-markers = "python_version < \"3.12\" and (sys_platform == \"win32\" or sys_platform == \"emscripten\" or sys_platform != \"win32\" and sys_platform != \"emscripten\")"
+markers = "(sys_platform == \"win32\" or sys_platform == \"emscripten\" or sys_platform != \"win32\" and sys_platform != \"emscripten\") and python_version < \"3.12\""
 files = [
     {file = "overrides-7.7.0-py3-none-any.whl", hash = "sha256:c7ed9d062f78b8e4c1a7b70bd8796b35ead4d9f510227ef9c5dc7626c60d7e49"},
     {file = "overrides-7.7.0.tar.gz", hash = "sha256:55158fa3d93b98cc75299b1e67078ad9003ca27945c76162c1c0766d6f91820a"},
@@ -4139,7 +4155,7 @@ description = "Run a subprocess in a pseudo terminal"
 optional = false
 python-versions = "*"
 groups = ["main"]
-markers = "(sys_platform == \"win32\" or sys_platform == \"emscripten\") and os_name != \"nt\" or sys_platform != \"win32\" and sys_platform != \"emscripten\""
+markers = "os_name != \"nt\" and (sys_platform == \"win32\" or sys_platform == \"emscripten\") or sys_platform != \"win32\" and sys_platform != \"emscripten\""
 files = [
     {file = "ptyprocess-0.7.0-py2.py3-none-any.whl", hash = "sha256:4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35"},
     {file = "ptyprocess-0.7.0.tar.gz", hash = "sha256:5c5d0a3b48ceee0b48485e0c26037c0acd7d29765ca3fbb5cb3831d347423220"},
@@ -4258,7 +4274,7 @@ description = "C parser in Python"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "(sys_platform == \"win32\" or sys_platform == \"emscripten\" or sys_platform != \"win32\" and sys_platform != \"emscripten\") and implementation_name == \"pypy\""
+markers = "implementation_name == \"pypy\" and (sys_platform == \"win32\" or sys_platform == \"emscripten\" or sys_platform != \"win32\" and sys_platform != \"emscripten\")"
 files = [
     {file = "pycparser-3.0-py3-none-any.whl", hash = "sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992"},
     {file = "pycparser-3.0.tar.gz", hash = "sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29"},
@@ -6308,7 +6324,7 @@ description = "Provider of IANA time zone data"
 optional = false
 python-versions = ">=2"
 groups = ["main"]
-markers = "sys_platform == \"win32\" or sys_platform == \"emscripten\" or sys_platform != \"win32\" and sys_platform != \"emscripten\""
+markers = "sys_platform != \"win32\" and sys_platform != \"emscripten\" or sys_platform == \"win32\" or sys_platform == \"emscripten\""
 files = [
     {file = "tzdata-2026.3-py2.py3-none-any.whl", hash = "sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931"},
     {file = "tzdata-2026.3.tar.gz", hash = "sha256:4a1518b8993086a7982523e071643f3c0e5f213e75b21318e78bcabfff9d1415"},
@@ -7127,4 +7143,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "bb4728f769d35b4f9cfd128cf8456e760d076d122866c72b8a32f036fd3775f7"
+content-hash = "6305bd4ae6c0ce05c3ef885cf62910d89ca7c694727f04baa52a3d15c8e74184"
