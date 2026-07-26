@@ -12,7 +12,6 @@ from .config import (
     ExtractionSettings,
     StorageSettings,
 )
-from .pipeline import run_pipeline
 from .processing import (
     Paragraph,
     ParagraphBatch,
@@ -49,3 +48,9 @@ def run_self_checks() -> None:
     from .self_checks import run_self_checks as _run_self_checks
 
     _run_self_checks()
+
+
+def run_pipeline(*args, **kwargs):
+    from .pipeline import run_pipeline as _run_pipeline
+
+    return _run_pipeline(*args, **kwargs)

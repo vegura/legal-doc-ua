@@ -5,7 +5,6 @@ from abc import ABC, abstractmethod
 from typing import Any, Mapping, Sequence
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from ..config import CRIMINAL_SCHEMA
 from ..processing import (
@@ -18,8 +17,10 @@ from ..processing import (
     normalize_arrow_value,
     paragraph_block,
     parse_json_response,
-    rtf_bytes_to_paragraphs,
     validate_arrow_value,
+)
+from .document_text_parsing.processing import (
+    populate_paragraph_artifacts,
 )
 from .prompts import (
     CASE_CLASSIFICATION_PROMPT,
@@ -69,51 +70,7 @@ class RtfToParagraphParquetHandler(V2Handler):
         context: V2HandlerContext,
     ) -> V2DocumentState:
         del context
-        paragraphs = tuple(rtf_bytes_to_paragraphs(state.raw_rtf))
-        if not paragraphs:
-            raise ValueError(
-                f"Document {state.document_id} contains no paragraphs"
-            )
-        state.paragraphs = paragraphs
-        state.numbered_text = "\n".join(
-            paragraph_block(paragraph) for paragraph in paragraphs
-        )
-        paragraph_rows = [
-            {
-                "document_id": str(state.document_id),
-                "paragraph_index": paragraph.paragraph_id,
-                "paragraph_order": paragraph.paragraph_order,
-                "numbered_text": paragraph_block(paragraph),
-                "text": paragraph.text,
-            }
-            for paragraph in paragraphs
-        ]
-        paragraph_schema = pa.schema(
-            [
-                pa.field("document_id", pa.string(), nullable=False),
-                pa.field("paragraph_index", pa.int32(), nullable=False),
-                pa.field("paragraph_order", pa.int32(), nullable=False),
-                pa.field("numbered_text", pa.string(), nullable=False),
-                pa.field("text", pa.string(), nullable=False),
-            ]
-        )
-        pq.write_table(
-            pa.Table.from_pylist(
-                paragraph_rows,
-                schema=paragraph_schema,
-            ),
-            state.artifact_path("paragraphs.parquet"),
-            compression="zstd",
-        )
-        state.write_json_artifact(
-            "numbered_document.json",
-            {
-                "document_id": state.document_id,
-                "paragraph_count": len(paragraphs),
-                "numbered_text": state.numbered_text,
-            },
-        )
-        return state
+        return populate_paragraph_artifacts(state)
 
 
 class PromptWiredHandler(V2Handler, ABC):
