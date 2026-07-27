@@ -105,29 +105,42 @@ def run_document_text_parsing_pipeline(
     bigquery_client: bigquery.Client | None = None,
 ) -> dict[str, int]:
     settings.validate()
-    active_client = storage_client or create_storage_client(
-        project_id=settings.project_id,
-        auth_mode="adc",
-    )
-    active_bigquery_client = (
-        bigquery_client
-        or create_bigquery_client(
+    with tqdm(
+        total=3,
+        desc="Preparing pipeline",
+        unit="step",
+        disable=not settings.show_progress,
+    ) as preparation:
+        preparation.set_postfix(stage="cloud clients")
+        active_client = storage_client or create_storage_client(
             project_id=settings.project_id,
             auth_mode="adc",
         )
-    )
-    prepare_manifest(active_client, settings)
-
-    completed_by_kind: dict[int, set[str]] = {}
-    if not settings.overwrite_existing:
-        completed_by_kind = {
-            justice_kind: list_completed_document_ids(
-                active_client,
-                settings,
-                justice_kind,
+        active_bigquery_client = (
+            bigquery_client
+            or create_bigquery_client(
+                project_id=settings.project_id,
+                auth_mode="adc",
             )
-            for justice_kind in settings.justice_kinds
-        }
+        )
+        preparation.update(1)
+
+        preparation.set_postfix(stage="manifest")
+        prepare_manifest(active_client, settings)
+        preparation.update(1)
+
+        preparation.set_postfix(stage="existing outputs")
+        completed_by_kind: dict[int, set[str]] = {}
+        if not settings.overwrite_existing:
+            completed_by_kind = {
+                justice_kind: list_completed_document_ids(
+                    active_client,
+                    settings,
+                    justice_kind,
+                )
+                for justice_kind in settings.justice_kinds
+            }
+        preparation.update(1)
 
     sources: Iterable[SourceDocument] = iter_unparsed_documents(
         active_bigquery_client,
