@@ -18,7 +18,6 @@ from .cloud import (
     ParagraphRunLogger,
     SourceDocument,
     download_source_document,
-    list_completed_document_ids,
     paragraph_object_path,
     prepare_manifest,
     upload_document_artifacts,
@@ -106,7 +105,7 @@ def run_document_text_parsing_pipeline(
 ) -> dict[str, int]:
     settings.validate()
     with tqdm(
-        total=3,
+        total=2,
         desc="Preparing pipeline",
         unit="step",
         disable=not settings.show_progress,
@@ -127,19 +126,6 @@ def run_document_text_parsing_pipeline(
 
         preparation.set_postfix(stage="manifest")
         prepare_manifest(active_client, settings)
-        preparation.update(1)
-
-        preparation.set_postfix(stage="existing outputs")
-        completed_by_kind: dict[int, set[str]] = {}
-        if not settings.overwrite_existing:
-            completed_by_kind = {
-                justice_kind: list_completed_document_ids(
-                    active_client,
-                    settings,
-                    justice_kind,
-                )
-                for justice_kind in settings.justice_kinds
-            }
         preparation.update(1)
 
     sources: Iterable[SourceDocument] = iter_unparsed_documents(
@@ -174,26 +160,14 @@ def run_document_text_parsing_pipeline(
             ) as progress,
         ):
             for batch in _iter_batches(sources, settings.batch_size):
-                pending: list[SourceDocument] = []
                 completed_sources: list[SourceDocument] = []
-                for source in batch:
-                    if (
-                        not settings.overwrite_existing
-                        and source.document_id
-                        in completed_by_kind[source.justice_kind]
-                    ):
-                        counters["skipped_existing"] += 1
-                        completed_sources.append(source)
-                        progress.update(1)
-                    else:
-                        pending.append(source)
                 outcomes = executor.map(
                     lambda source: _process_document(
                         active_client,
                         settings,
                         source,
                     ),
-                    pending,
+                    batch,
                 )
                 for outcome in outcomes:
                     counters[outcome.status] += 1

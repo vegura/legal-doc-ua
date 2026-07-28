@@ -96,31 +96,6 @@ def document_marker_object_path(
     return f"{document_prefix}/_document.json"
 
 
-def list_completed_document_ids(
-    storage_client: storage.Client,
-    settings: DocumentTextParsingSettings,
-    justice_kind: int,
-) -> set[str]:
-    prefix = _join_object_path(
-        settings.normalized_destination_prefix,
-        str(int(justice_kind)),
-    ) + "/"
-    completed: set[str] = set()
-    for blob in storage_client.list_blobs(
-        settings.destination_bucket,
-        prefix=prefix,
-    ):
-        relative = blob.name[len(prefix) :]
-        parts = relative.split("/")
-        if (
-            len(parts) == 2
-            and parts[0]
-            and parts[1] == "paragraphs.parquet"
-        ):
-            completed.add(parts[0])
-    return completed
-
-
 def build_manifest_identity(
     settings: DocumentTextParsingSettings,
 ) -> dict[str, Any]:
