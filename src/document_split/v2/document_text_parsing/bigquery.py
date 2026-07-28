@@ -24,7 +24,7 @@ def iter_unparsed_documents(
         FROM `{settings.bigquery_table}`
         WHERE doc_id IS NOT NULL
           AND justice_kind IN UNNEST(@justice_kinds)
-          AND is_parsed IS NOT TRUE
+          AND is_parsed = FALSE
         ORDER BY justice_kind, doc_id
         {limit_clause}
     """
