@@ -13,11 +13,10 @@ from .bigquery import (
     mark_documents_classified,
 )
 from .cloud import (
-    classification_result_exists,
     classification_result_object_path,
     classification_source_object_path,
     download_paragraph_parquet,
-    upload_classification_parquet_atomically,
+    upload_classification_parquet,
 )
 from .processing import classify_paragraph_parquet
 from .runtime import load_classification_model
@@ -74,7 +73,6 @@ def run_document_classification_pipeline(
     )
     counters = {
         "processed": 0,
-        "skipped_existing": 0,
         "failed": 0,
         "paragraphs": 0,
         "model_calls": 0,
@@ -107,35 +105,26 @@ def run_document_classification_pipeline(
                 settings, source
             )
             try:
-                if settings.skip_existing and classification_result_exists(
+                source_bytes = download_paragraph_parquet(
                     active_storage, settings, source
-                ):
-                    counters["skipped_existing"] += 1
-                    completed.append(source)
-                else:
-                    source_bytes = download_paragraph_parquet(
-                        active_storage, settings, source
-                    )
-                    result = classify_paragraph_parquet(
-                        document_id=source.document_id,
-                        parquet_bytes=source_bytes,
-                        model_pipe=active_model,
-                        tokenizer=active_tokenizer,
-                        settings=settings,
-                    )
-                    created = upload_classification_parquet_atomically(
-                        active_storage,
-                        settings,
-                        source,
-                        result.parquet_bytes,
-                    )
-                    if created:
-                        counters["processed"] += 1
-                        counters["paragraphs"] += result.paragraph_count
-                        counters["model_calls"] += result.model_calls
-                    else:
-                        counters["skipped_existing"] += 1
-                    completed.append(source)
+                )
+                result = classify_paragraph_parquet(
+                    document_id=source.document_id,
+                    parquet_bytes=source_bytes,
+                    model_pipe=active_model,
+                    tokenizer=active_tokenizer,
+                    settings=settings,
+                )
+                upload_classification_parquet(
+                    active_storage,
+                    settings,
+                    source,
+                    result.parquet_bytes,
+                )
+                counters["processed"] += 1
+                counters["paragraphs"] += result.paragraph_count
+                counters["model_calls"] += result.model_calls
+                completed.append(source)
             except Exception as exc:
                 counters["failed"] += 1
                 logger.record(

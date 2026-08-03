@@ -31,7 +31,6 @@ class DocumentClassificationSettings:
     bigquery_page_size: int = 500
     progress_update_batch_size: int = 100
     limit: int | None = None
-    skip_existing: bool = True
     show_progress: bool = True
     run_log_flush_size: int = 100
     prompt: str = DOCUMENT_PART_CLASSIFICATION_PROMPT

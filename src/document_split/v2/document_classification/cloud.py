@@ -43,33 +43,14 @@ def download_paragraph_parquet(
     return blob.download_as_bytes()
 
 
-def classification_result_exists(
-    storage_client: storage.Client,
-    settings: DocumentClassificationSettings,
-    source: ClassificationSource,
-) -> bool:
-    object_path = classification_result_object_path(settings, source)
-    return storage_client.bucket(settings.bucket).blob(object_path).exists(
-        client=storage_client
-    )
-
-
-def upload_classification_parquet_atomically(
+def upload_classification_parquet(
     storage_client: storage.Client,
     settings: DocumentClassificationSettings,
     source: ClassificationSource,
     parquet_bytes: bytes,
-) -> bool:
-    from google.api_core.exceptions import PreconditionFailed
-
+) -> None:
     object_path = classification_result_object_path(settings, source)
-    kwargs = {} if not settings.skip_existing else {"if_generation_match": 0}
-    try:
-        storage_client.bucket(settings.bucket).blob(object_path).upload_from_string(
-            parquet_bytes,
-            content_type="application/vnd.apache.parquet",
-            **kwargs,
-        )
-    except PreconditionFailed:
-        return False
-    return True
+    storage_client.bucket(settings.bucket).blob(object_path).upload_from_string(
+        parquet_bytes,
+        content_type="application/vnd.apache.parquet",
+    )
