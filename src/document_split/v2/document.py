@@ -7,12 +7,17 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ..config import ExtractionSettings
-from ..processing import validate_document_payload
-from .handlers import V2Handler, build_default_v2_chain
+from ..processing import validate_part_payload
+from .handlers import (
+    V2Handler,
+    build_parts_v2_chain,
+)
 from .settings import (
     DEFAULT_V2_CHAIN_SETTINGS,
     DEFAULT_V2_EXTRACTION_SETTINGS,
+    DEFAULT_V2_PART_PROCESSING_PROMPTS,
     V2ChainSettings,
+    V2PartProcessingPrompts,
     validate_v2_extraction_settings,
 )
 from .state import V2DocumentState, V2HandlerContext
@@ -22,9 +27,8 @@ def finalize_v2_document(
     state: V2DocumentState,
     extraction_settings: ExtractionSettings,
 ) -> V2DocumentState:
-    normalized, _section_ids = validate_document_payload(
+    normalized = validate_part_payload(
         state.extraction,
-        state.paragraphs,
         extraction_settings.extraction_schema,
     )
     state.final_object = normalized
@@ -61,11 +65,11 @@ def finalize_v2_document(
     return state
 
 
-def process_v2_document(
+def process_parts_v2_document(
     *,
     document_id: str,
     justice_kind: int,
-    raw_rtf: bytes,
+    parts_parquet_bytes: bytes,
     work_dir: Path,
     model_pipe: Any,
     tokenizer: Any,
@@ -73,22 +77,31 @@ def process_v2_document(
         DEFAULT_V2_EXTRACTION_SETTINGS
     ),
     chain_settings: V2ChainSettings = DEFAULT_V2_CHAIN_SETTINGS,
+    part_prompts: V2PartProcessingPrompts = (
+        DEFAULT_V2_PART_PROCESSING_PROMPTS
+    ),
     chain: V2Handler | None = None,
+    production: bool = True,
 ) -> V2DocumentState:
+    """Route upstream paragraph parts and create one merged result row."""
+
     validate_v2_extraction_settings(extraction_settings)
     chain_settings.validate()
+    part_prompts.validate(production=production)
     state = V2DocumentState(
         document_id=str(document_id),
         justice_kind=int(justice_kind),
-        raw_rtf=raw_rtf,
+        raw_rtf=b"",
         work_dir=work_dir,
+        parts_parquet_bytes=parts_parquet_bytes,
     )
     context = V2HandlerContext(
         model_pipe=model_pipe,
         tokenizer=tokenizer,
         extraction_settings=extraction_settings,
         chain_settings=chain_settings,
+        include_base_prompt=False,
     )
-    active_chain = chain or build_default_v2_chain()
+    active_chain = chain or build_parts_v2_chain(part_prompts)
     active_chain.handle(state, context)
     return finalize_v2_document(state, extraction_settings)

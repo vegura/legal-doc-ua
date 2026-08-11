@@ -17,19 +17,15 @@ from ..processing import (
     normalize_arrow_value,
     paragraph_block,
     parse_json_response,
+    read_part_paragraphs_parquet,
     validate_arrow_value,
 )
-from .document_text_parsing.processing import (
-    populate_paragraph_artifacts,
-)
-from .prompts import (
-    CASE_CLASSIFICATION_PROMPT,
-    COURT_REASONING_PART_PROMPT,
-    INTRODUCTORY_PART_PROMPT,
-    PLACEHOLDER_HANDLER_PROMPT,
-    RESULT_PART_PROMPT,
-)
 from .state import V2DocumentState, V2HandlerContext
+from .settings import (
+    PART_PROCESSING_PROMPT_PLACEHOLDER,
+    V2PartProcessingMode,
+    V2PartProcessingPrompts,
+)
 
 
 class V2Handler(ABC):
@@ -61,16 +57,55 @@ class V2Handler(ABC):
         raise NotImplementedError
 
 
-class RtfToParagraphParquetHandler(V2Handler):
-    """Normalize RTF, number paragraphs, and persist the source table."""
+class PartParagraphParquetHandler(V2Handler):
+    """Load the authoritative paragraph text and section labels."""
+
+    handler_name = "upstream_parts"
 
     def transform(
         self,
         state: V2DocumentState,
         context: V2HandlerContext,
     ) -> V2DocumentState:
-        del context
-        return populate_paragraph_artifacts(state)
+        if state.parts_parquet_bytes is None:
+            raise ValueError(
+                f"Document {state.document_id} has no classification.parquet"
+            )
+        paragraphs, source_parts = read_part_paragraphs_parquet(
+            state.parts_parquet_bytes,
+            document_id=state.document_id,
+        )
+        part_assignments = (
+            normalize_sequential_parts(
+                paragraphs,
+                source_parts,
+            )
+            if context.chain_settings.part_processing_mode == "sequential"
+            else source_parts
+        )
+        state.paragraphs = paragraphs
+        state.numbered_text = "\n".join(
+            paragraph_block(paragraph) for paragraph in paragraphs
+        )
+        state.part_assignments = part_assignments
+        result = {"paragraph_parts": part_assignments}
+        state.handler_outputs[self.handler_name] = result
+        state.artifact_path("source_parts.parquet").write_bytes(
+            state.parts_parquet_bytes
+        )
+        state.write_json_artifact(
+            "numbered_document.json",
+            {
+                "document_id": state.document_id,
+                "paragraph_count": len(paragraphs),
+                "numbered_text": state.numbered_text,
+            },
+        )
+        state.write_json_artifact(
+            f"handlers/{self.handler_name}/result.json",
+            result,
+        )
+        return state
 
 
 class PromptWiredHandler(V2Handler, ABC):
@@ -98,13 +133,22 @@ class PromptWiredHandler(V2Handler, ABC):
         batch: ParagraphBatch,
         output_schema: pa.Schema,
         batch_index: int,
+        *,
+        processing_part_index: int = 1,
+        processing_part_count: int = 1,
     ) -> dict[str, Any]:
         messages = compose_v2_handler_messages(
             state=state,
             batch=batch,
-            base_prompt=context.extraction_settings.prompt,
+            base_prompt=(
+                context.extraction_settings.prompt
+                if context.include_base_prompt
+                else ""
+            ),
             handler_prompt=self.handler_prompt,
             output_schema=output_schema,
+            processing_part_index=processing_part_index,
+            processing_part_count=processing_part_count,
         )
         input_tokens = count_message_tokens(
             context.tokenizer,
@@ -145,75 +189,6 @@ class PromptWiredHandler(V2Handler, ABC):
         return payload
 
 
-class CaseAndParagraphClassificationHandler(PromptWiredHandler):
-    handler_name = "case_and_paragraph_classification"
-    handler_prompt = CASE_CLASSIFICATION_PROMPT
-
-    @property
-    def output_schema(self) -> pa.Schema:
-        return pa.schema(
-            [
-                CRIMINAL_SCHEMA.field("decision_stage"),
-                CRIMINAL_SCHEMA.field("paragraph_classification"),
-            ]
-        )
-
-    def transform(
-        self,
-        state: V2DocumentState,
-        context: V2HandlerContext,
-    ) -> V2DocumentState:
-        classifications: list[dict[str, Any]] = []
-        stages: list[str] = []
-        batches = self._batches(state.paragraphs, context)
-
-        for batch_index, batch in enumerate(batches, start=1):
-            payload = self._call_model(
-                state,
-                context,
-                batch,
-                self.output_schema,
-                batch_index,
-            )
-            normalized = normalize_v2_payload(
-                payload,
-                self.output_schema,
-            )
-            batch_classifications = normalized[
-                "paragraph_classification"
-            ]
-            _validate_batch_classifications(
-                batch_classifications,
-                batch.targets,
-            )
-            classifications.extend(batch_classifications)
-            stages.append(normalized["decision_stage"])
-
-        expected_ids = [
-            paragraph.paragraph_id for paragraph in state.paragraphs
-        ]
-        returned_ids = [
-            value["paragraph_index"] for value in classifications
-        ]
-        if returned_ids != expected_ids:
-            raise ValueError(
-                "Classification batches lost or reordered paragraphs: "
-                f"expected {expected_ids}, got {returned_ids}"
-            )
-
-        result = {
-            "decision_stage": _merge_decision_stages(stages),
-            "paragraph_classification": classifications,
-        }
-        state.extraction.update(result)
-        state.handler_outputs[self.handler_name] = result
-        state.write_json_artifact(
-            f"handlers/{self.handler_name}/result.json",
-            result,
-        )
-        return state
-
-
 class SectionExtractionHandler(PromptWiredHandler):
     field_name: str
     selected_sections: frozenset[str]
@@ -228,19 +203,21 @@ class SectionExtractionHandler(PromptWiredHandler):
         context: V2HandlerContext,
     ) -> V2DocumentState:
         selected_ids = {
-            classification["paragraph_index"]
-            for classification in state.extraction.get(
-                "paragraph_classification",
-                [],
-            )
-            if classification["section"] in self.selected_sections
+            assignment["paragraph_index"]
+            for assignment in state.part_assignments
+            if assignment["section"] in self.selected_sections
         }
-        selected = tuple(
-            paragraph
-            for paragraph in state.paragraphs
-            if paragraph.paragraph_id in selected_ids
+        section_by_id = {
+            assignment["paragraph_index"]: assignment["section"]
+            for assignment in state.part_assignments
+        }
+        processing_parts = group_selected_paragraphs(
+            state.paragraphs,
+            selected_ids,
+            mode=context.chain_settings.part_processing_mode,
+            group_key_by_id=section_by_id,
         )
-        if not selected:
+        if not processing_parts:
             result = {self.field_name: None}
             state.extraction[self.field_name] = None
             state.handler_outputs[self.handler_name] = result
@@ -251,33 +228,40 @@ class SectionExtractionHandler(PromptWiredHandler):
             return state
 
         merged: Any = None
-        batches = self._batches(selected, context)
-        for batch_index, batch in enumerate(batches, start=1):
-            payload = self._call_model(
-                state,
-                context,
-                batch,
-                self.output_schema,
-                batch_index,
-            )
-            normalized = normalize_v2_payload(
-                payload,
-                self.output_schema,
-            )
-            _validate_nested_paragraph_indexes(
-                normalized[self.field_name],
-                {
-                    paragraph.paragraph_id
-                    for paragraph in batch.targets
-                },
-                path=self.field_name,
-            )
-            merged = merge_v2_values(
-                merged,
-                normalized[self.field_name],
-                path=self.field_name,
-                warnings=state.warnings,
-            )
+        batch_index = 0
+        for part_index, processing_part in enumerate(
+            processing_parts,
+            start=1,
+        ):
+            for batch in self._batches(processing_part, context):
+                batch_index += 1
+                payload = self._call_model(
+                    state,
+                    context,
+                    batch,
+                    self.output_schema,
+                    batch_index,
+                    processing_part_index=part_index,
+                    processing_part_count=len(processing_parts),
+                )
+                normalized = normalize_v2_payload(
+                    payload,
+                    self.output_schema,
+                )
+                _validate_nested_paragraph_indexes(
+                    normalized[self.field_name],
+                    {
+                        paragraph.paragraph_id
+                        for paragraph in batch.targets
+                    },
+                    path=self.field_name,
+                )
+                merged = merge_v2_values(
+                    merged,
+                    normalized[self.field_name],
+                    path=self.field_name,
+                    warnings=state.warnings,
+                )
 
         schema_field = self.output_schema.field(self.field_name)
         validate_arrow_value(
@@ -297,23 +281,32 @@ class SectionExtractionHandler(PromptWiredHandler):
 
 class IntroductoryPartHandler(SectionExtractionHandler):
     handler_name = "introductory_part"
-    handler_prompt = INTRODUCTORY_PART_PROMPT
     field_name = "introductory_part"
     selected_sections = frozenset({"introductory"})
+
+    def __init__(self, *, prompt: str) -> None:
+        super().__init__()
+        self.handler_prompt = prompt
 
 
 class CourtReasoningPartHandler(SectionExtractionHandler):
     handler_name = "court_reasoning_part"
-    handler_prompt = COURT_REASONING_PART_PROMPT
     field_name = "reasoning_part"
     selected_sections = frozenset({"descriptive", "reasoning"})
+
+    def __init__(self, *, prompt: str) -> None:
+        super().__init__()
+        self.handler_prompt = prompt
 
 
 class ResultPartHandler(SectionExtractionHandler):
     handler_name = "result_part"
-    handler_prompt = RESULT_PART_PROMPT
     field_name = "operative_part"
     selected_sections = frozenset({"operative"})
+
+    def __init__(self, *, prompt: str) -> None:
+        super().__init__()
+        self.handler_prompt = prompt
 
 
 class PlaceholderPromptHandler(PromptWiredHandler):
@@ -324,7 +317,7 @@ class PlaceholderPromptHandler(PromptWiredHandler):
     def __init__(
         self,
         *,
-        prompt: str = PLACEHOLDER_HANDLER_PROMPT,
+        prompt: str = PART_PROCESSING_PROMPT_PLACEHOLDER,
         output_schema: pa.Schema | None = None,
         selected_sections: frozenset[str] | None = None,
     ) -> None:
@@ -344,10 +337,7 @@ class PlaceholderPromptHandler(PromptWiredHandler):
         if self.selected_sections is not None:
             selected_ids = {
                 item["paragraph_index"]
-                for item in state.extraction.get(
-                    "paragraph_classification",
-                    [],
-                )
+                for item in state.part_assignments
                 if item["section"] in self.selected_sections
             }
             paragraphs = tuple(
@@ -389,6 +379,8 @@ def compose_v2_handler_messages(
     base_prompt: str,
     handler_prompt: str,
     output_schema: pa.Schema,
+    processing_part_index: int = 1,
+    processing_part_count: int = 1,
 ) -> list[dict[str, Any]]:
     context_text = "\n".join(
         paragraph_block(paragraph) for paragraph in batch.context
@@ -404,12 +396,12 @@ def compose_v2_handler_messages(
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    classifications = state.extraction.get(
-        "paragraph_classification",
-        [],
-    )
+    part_assignments = state.part_assignments
     user_text = f"""The document is represented as a numbered paragraph list.
 All paragraph indexes are global and must remain unchanged.
+
+PROCESSING PART:
+{processing_part_index} of {processing_part_count}
 
 TARGET PARAGRAPH IDS:
 {target_ids}
@@ -420,8 +412,8 @@ CONTEXT PARAGRAPHS (read-only; do not return batch records for these):
 TARGET PARAGRAPHS:
 {target_text}
 
-KNOWN PARAGRAPH CLASSIFICATION:
-{json.dumps(classifications, ensure_ascii=False, separators=(",", ":"))}
+UPSTREAM PARAGRAPH PARTS (routing metadata; do not return them):
+{json.dumps(part_assignments, ensure_ascii=False, separators=(",", ":"))}
 
 Fulfill every schema field supported by TARGET PARAGRAPHS. Return one compact
 JSON object only, without Markdown or commentary.
@@ -429,6 +421,12 @@ JSON object only, without Markdown or commentary.
 JSON CONTRACT:
 {contract}
 """
+    base_instructions = (
+        "The following canonical prompt is additional reference material:\n\n"
+        f"{base_prompt}\n\n"
+        if base_prompt.strip()
+        else ""
+    )
     return [
         {
             "role": "system",
@@ -438,16 +436,11 @@ JSON CONTRACT:
                     "text": (
                         "You are executing one transformation in a "
                         "chain-of-responsibility.\n\n"
-                        "The following canonical prompt defines the legal "
-                        "meaning of fields, but its full-document response "
-                        "example is reference material only:\n\n"
-                        f"{base_prompt}\n\n"
+                        f"{base_instructions}"
                         "ACTIVE HANDLER INSTRUCTIONS:\n"
                         f"{handler_prompt}\n\n"
-                        "The active handler instructions and the JSON "
-                        "contract in the user message override any broader "
-                        "output shape shown in the canonical prompt. Return "
-                        "only the active handler's schema fields."
+                        "Return only the active handler's schema fields and "
+                        "follow the JSON contract in the user message."
                     ),
                 }
             ],
@@ -457,6 +450,97 @@ JSON CONTRACT:
             "content": [{"type": "text", "text": user_text}],
         },
     ]
+
+
+def group_selected_paragraphs(
+    paragraphs: Sequence[Paragraph],
+    selected_ids: set[int],
+    *,
+    mode: V2PartProcessingMode,
+    group_key_by_id: Mapping[int, str] | None = None,
+) -> tuple[tuple[Paragraph, ...], ...]:
+    """Select one combined part or one effective sequential document part."""
+
+    if mode == "filtered":
+        selected = tuple(
+            paragraph
+            for paragraph in paragraphs
+            if paragraph.paragraph_id in selected_ids
+        )
+        return (selected,) if selected else ()
+    if mode != "sequential":
+        raise ValueError(f"Unsupported part processing mode: {mode!r}")
+
+    groups: list[tuple[Paragraph, ...]] = []
+    current: list[Paragraph] = []
+    current_group_key: str | None = None
+    for paragraph in paragraphs:
+        if paragraph.paragraph_id in selected_ids:
+            group_key = (
+                group_key_by_id.get(paragraph.paragraph_id)
+                if group_key_by_id is not None
+                else None
+            )
+            if current and group_key != current_group_key:
+                groups.append(tuple(current))
+                current = []
+            current.append(paragraph)
+            current_group_key = group_key
+        elif current:
+            groups.append(tuple(current))
+            current = []
+            current_group_key = None
+    if current:
+        groups.append(tuple(current))
+    return tuple(groups)
+
+
+def normalize_sequential_parts(
+    paragraphs: Sequence[Paragraph],
+    part_assignments: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Enforce the three non-regressing parts of a criminal decision.
+
+    ``descriptive`` and ``reasoning`` both signal the combined reasoning part.
+    Once a later part begins, a later regressing label does not move the
+    effective processing state backwards.
+    """
+
+    source_section_by_id = {
+        item["paragraph_index"]: item["section"]
+        for item in part_assignments
+    }
+    stage_by_section = {
+        "introductory": (0, "introductory"),
+        "descriptive": (1, "reasoning"),
+        "reasoning": (1, "reasoning"),
+        "operative": (2, "operative"),
+    }
+    current_stage = -1
+    current_section: str | None = None
+    effective: list[dict[str, Any]] = []
+    for paragraph in paragraphs:
+        paragraph_id = paragraph.paragraph_id
+        source_section = source_section_by_id[paragraph_id]
+        try:
+            candidate_stage, candidate_section = stage_by_section[
+                source_section
+            ]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unsupported section for paragraph {paragraph_id}: "
+                f"{source_section!r}"
+            ) from exc
+        if candidate_stage > current_stage:
+            current_stage = candidate_stage
+            current_section = candidate_section
+        effective.append(
+            {
+                "paragraph_index": paragraph_id,
+                "section": current_section,
+            }
+        )
+    return effective
 
 
 def normalize_v2_payload(
@@ -538,66 +622,19 @@ def merge_v2_values(
     return current
 
 
-def build_default_v2_chain() -> V2Handler:
-    root = RtfToParagraphParquetHandler()
-    classification = CaseAndParagraphClassificationHandler()
-    introductory = IntroductoryPartHandler()
-    reasoning = CourtReasoningPartHandler()
-    result = ResultPartHandler()
-    root.set_next(classification)
-    classification.set_next(introductory)
+def build_parts_v2_chain(
+    part_prompts: V2PartProcessingPrompts,
+) -> V2Handler:
+    """Route upstream paragraph parts to specialized extraction handlers."""
+
+    root = PartParagraphParquetHandler()
+    introductory = IntroductoryPartHandler(prompt=part_prompts.introductory)
+    reasoning = CourtReasoningPartHandler(prompt=part_prompts.reasoning)
+    result = ResultPartHandler(prompt=part_prompts.operative)
+    root.set_next(introductory)
     introductory.set_next(reasoning)
     reasoning.set_next(result)
     return root
-
-
-def _validate_batch_classifications(
-    classifications: Any,
-    targets: Sequence[Paragraph],
-) -> None:
-    if not isinstance(classifications, list):
-        raise TypeError("paragraph_classification must be a list")
-    expected_ids = [
-        paragraph.paragraph_id for paragraph in targets
-    ]
-    returned_ids: list[int] = []
-    allowed = {
-        "introductory",
-        "descriptive",
-        "reasoning",
-        "operative",
-    }
-    for index, classification in enumerate(classifications):
-        if not isinstance(classification, Mapping):
-            raise TypeError(
-                f"paragraph_classification[{index}] must be an object"
-            )
-        paragraph_id = classification["paragraph_index"]
-        section = classification["section"]
-        if section not in allowed:
-            raise ValueError(
-                f"Unsupported section for paragraph {paragraph_id}: "
-                f"{section!r}"
-            )
-        returned_ids.append(paragraph_id)
-    if returned_ids != expected_ids:
-        raise ValueError(
-            "Classification batch must return each target once and in order: "
-            f"expected {expected_ids}, got {returned_ids}"
-        )
-
-
-def _merge_decision_stages(stages: Sequence[str]) -> str:
-    normalized = [
-        stage for stage in stages if stage != "undetermined"
-    ]
-    if not normalized:
-        return "undetermined"
-    if "final" in normalized:
-        return "final"
-    if "intermediate" in normalized:
-        return "intermediate"
-    return normalized[0]
 
 
 def _validate_nested_paragraph_indexes(

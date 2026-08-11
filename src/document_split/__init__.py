@@ -4,7 +4,6 @@ from .config import (
     DEFAULT_EXTRACTION_PROMPT,
     DESTINATION_BUCKET,
     CRIMINAL_SCHEMA,
-    CRIMINAL_PROMPT,
     INFO_VERSION,
     MODEL_ID,
     PROJECT_ID,
@@ -16,9 +15,7 @@ from .processing import (
     Paragraph,
     ParagraphBatch,
     build_paragraph_batches,
-    parse_document_to_parquet,
     rtf_bytes_to_paragraphs,
-    validate_model_payload,
 )
 __all__ = [
     "BASE_SCHEMA",
@@ -26,7 +23,6 @@ __all__ = [
     "DEFAULT_EXTRACTION_PROMPT",
     "DESTINATION_BUCKET",
     "CRIMINAL_SCHEMA",
-    "CRIMINAL_PROMPT",
     "INFO_VERSION",
     "MODEL_ID",
     "PROJECT_ID",
@@ -36,21 +32,5 @@ __all__ = [
     "ParagraphBatch",
     "StorageSettings",
     "build_paragraph_batches",
-    "parse_document_to_parquet",
     "rtf_bytes_to_paragraphs",
-    "run_pipeline",
-    "run_self_checks",
-    "validate_model_payload",
 ]
-
-
-def run_self_checks() -> None:
-    from .self_checks import run_self_checks as _run_self_checks
-
-    _run_self_checks()
-
-
-def run_pipeline(*args, **kwargs):
-    from .pipeline import run_pipeline as _run_pipeline
-
-    return _run_pipeline(*args, **kwargs)

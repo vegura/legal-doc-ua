@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import json
 import re
 import unicodedata
@@ -10,9 +9,6 @@ from typing import Any, Mapping, Sequence
 import pyarrow as pa
 import pyarrow.parquet as pq
 from striprtf.striprtf import rtf_to_text
-
-from .config import ExtractionSettings
-
 
 _CONTROL_CHARACTERS = re.compile(
     r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"
@@ -201,39 +197,6 @@ def arrow_field_contract(field: pa.Field) -> dict[str, Any]:
     return contract
 
 
-def build_paragraph_response_contract(
-    extraction_schema: pa.Schema,
-) -> dict[str, Any]:
-    paragraph_properties: dict[str, Any] = {
-        "paragraph_id": {"type": "integer"},
-        "section_id": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 32767,
-        },
-    }
-    for schema_field in extraction_schema:
-        paragraph_properties[schema_field.name] = arrow_type_contract(
-            schema_field.type
-        )
-    return {
-        "type": "object",
-        "properties": {
-            "paragraphs": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": paragraph_properties,
-                    "required": list(paragraph_properties),
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["paragraphs"],
-        "additionalProperties": False,
-    }
-
-
 def build_response_contract(
     extraction_schema: pa.Schema,
 ) -> dict[str, Any]:
@@ -251,48 +214,6 @@ def build_response_contract(
         ],
         "additionalProperties": False,
     }
-
-
-def build_messages(
-    research_prompt: str,
-    extraction_schema: pa.Schema,
-    batch: ParagraphBatch,
-    known_section_ids: Mapping[int, int],
-) -> list[dict[str, Any]]:
-    target_text = "\n\n".join(
-        paragraph_block(value) for value in batch.targets
-    )
-    target_ids = [value.paragraph_id for value in batch.targets]
-    contract = json.dumps(
-        build_response_contract(extraction_schema),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    user_text = f"""The following text is the complete court document.
-
-DOCUMENT PARAGRAPHS:
-{target_text}
-
-In paragraph_classification, return exactly one item for every paragraph_index
-in {target_ids}, in this order.
-
-Return one document-level JSON object matching this contract. Include every
-configured field, using null when the prompt does not support a value. Do not
-add keys, commentary, or Markdown fences. Return compact JSON without
-indentation or unnecessary whitespace.
-JSON CONTRACT:
-{contract}
-"""
-    return [
-        {
-            "role": "system",
-            "content": [{"type": "text", "text": research_prompt}],
-        },
-        {
-            "role": "user",
-            "content": [{"type": "text", "text": user_text}],
-        },
-    ]
 
 
 def count_message_tokens(
@@ -535,107 +456,18 @@ def normalize_known_document_layout(
     return normalized_payload
 
 
-def validate_model_payload(
+def validate_part_payload(
     payload: Mapping[str, Any],
-    targets: Sequence[Paragraph],
     extraction_schema: pa.Schema,
-    previous_section_id: int | None,
-) -> tuple[list[dict[str, Any]], int]:
-    if set(payload) != {"paragraphs"}:
-        raise ValueError(
-            "The top-level response must contain only 'paragraphs'"
-        )
-    returned = payload["paragraphs"]
-    if not isinstance(returned, list):
-        raise TypeError("paragraphs must be a list")
+) -> dict[str, Any]:
+    """Normalize and validate the merged outputs of the three part handlers."""
 
-    target_by_id = {value.paragraph_id: value for value in targets}
-    expected_ids = [value.paragraph_id for value in targets]
-    expected_fields = {
-        "paragraph_id",
-        "section_id",
-        *extraction_schema.names,
-    }
-    result_by_id: dict[int, dict[str, Any]] = {}
-
-    for index, row in enumerate(returned):
-        if not isinstance(row, dict):
-            raise TypeError(f"paragraphs[{index}] must be an object")
-        if set(row) != expected_fields:
-            raise ValueError(
-                f"paragraphs[{index}] fields differ from the configured schema"
-            )
-        paragraph_id = row["paragraph_id"]
-        if type(paragraph_id) is not int or paragraph_id not in target_by_id:
-            raise ValueError(f"Unknown paragraph_id: {paragraph_id!r}")
-        if paragraph_id in result_by_id:
-            raise ValueError(f"Duplicate paragraph_id: {paragraph_id}")
-
-        section_id = row["section_id"]
-        validate_arrow_value(
-            section_id,
-            pa.field("section_id", pa.int16(), nullable=False),
-            f"paragraphs[{index}].section_id",
-        )
-        if section_id < 0:
-            raise ValueError("section_id cannot be negative")
-
-        for schema_field in extraction_schema:
-            validate_arrow_value(
-                row[schema_field.name],
-                schema_field,
-                f"paragraphs[{index}].{schema_field.name}",
-            )
-
-        entities = row.get("entities")
-        if entities is not None:
-            paragraph_text = target_by_id[paragraph_id].text
-            for entity_index, entity in enumerate(entities):
-                start = entity["start_offset"]
-                end = entity["end_offset"]
-                if not 0 <= start <= end <= len(paragraph_text):
-                    raise ValueError(
-                        f"entities[{entity_index}] offsets are outside "
-                        f"paragraph {paragraph_id}"
-                    )
-        result_by_id[paragraph_id] = dict(row)
-
-    if set(result_by_id) != set(expected_ids):
-        missing = sorted(set(expected_ids) - set(result_by_id))
-        raise ValueError(
-            f"Model response is missing target paragraphs: {missing}"
-        )
-
-    ordered = [
-        result_by_id[paragraph_id] for paragraph_id in expected_ids
-    ]
-    last_section_id = previous_section_id
-    for index, row in enumerate(ordered):
-        section_id = row["section_id"]
-        if last_section_id is None:
-            if index == 0 and section_id != 0:
-                raise ValueError("The first document section_id must be 0")
-        elif section_id not in {last_section_id, last_section_id + 1}:
-            raise ValueError(
-                "section_id must stay the same or increment by exactly one"
-            )
-        last_section_id = section_id
-    if last_section_id is None:
-        raise ValueError("A target batch cannot be empty")
-    return ordered, last_section_id
-
-
-def validate_document_payload(
-    payload: Mapping[str, Any],
-    paragraphs: Sequence[Paragraph],
-    extraction_schema: pa.Schema,
-) -> tuple[dict[str, Any], dict[int, int]]:
     payload = normalize_known_document_layout(payload, extraction_schema)
     expected_fields = set(extraction_schema.names)
     unexpected = set(payload) - expected_fields
     if unexpected:
         raise ValueError(
-            f"Document has unexpected fields: {sorted(unexpected)}"
+            f"Part extraction has unexpected fields: {sorted(unexpected)}"
         )
     normalized: dict[str, Any] = {}
     for schema_field in extraction_schema:
@@ -654,279 +486,75 @@ def validate_document_payload(
             schema_field,
             schema_field.name,
         )
+    return normalized
 
-    if "paragraph_classification" not in normalized:
+def read_part_paragraphs_parquet(
+    parquet_bytes: bytes,
+    *,
+    document_id: str,
+) -> tuple[tuple[Paragraph, ...], list[dict[str, Any]]]:
+    """Load paragraph text and upstream part assignments for one document."""
+
+    table = pq.read_table(pa.BufferReader(parquet_bytes), use_threads=False)
+    required_columns = {
+        "document_id",
+        "paragraph_index",
+        "paragraph_order",
+        "text",
+    }
+    part_column = "part" if "part" in table.column_names else "section"
+    required_columns.add(part_column)
+    missing_columns = required_columns - set(table.column_names)
+    if missing_columns:
         raise ValueError(
-            "Document extraction schema must contain "
-            "paragraph_classification"
+            "classification.parquet is missing required columns: "
+            f"{sorted(missing_columns)}"
         )
-    classifications = normalized["paragraph_classification"]
-    if not isinstance(classifications, list):
-        raise TypeError("paragraph_classification must be a list")
 
-    expected_ids = [paragraph.paragraph_id for paragraph in paragraphs]
-    returned_ids: list[int] = []
-    section_labels: list[str] = []
+    rows = table.to_pylist()
+    if not rows:
+        raise ValueError(
+            f"Part file for document {document_id} has no paragraph rows"
+        )
+    expected_indexes = list(range(1, len(rows) + 1))
+    indexes = [row["paragraph_index"] for row in rows]
+    if indexes != expected_indexes:
+        raise ValueError(
+            "Part-file paragraph indexes must be consecutive and start at 1: "
+            f"expected {expected_indexes}, got {indexes}"
+        )
+    if any(str(row["document_id"]) != str(document_id) for row in rows):
+        raise ValueError(
+            "classification.parquet contains a different document_id than "
+            f"{document_id}"
+        )
+
     allowed_sections = {
         "introductory",
         "descriptive",
         "reasoning",
         "operative",
     }
-    for index, classification in enumerate(classifications):
-        if not isinstance(classification, Mapping):
-            raise TypeError(
-                f"paragraph_classification[{index}] must be an object"
-            )
-        paragraph_index = classification["paragraph_index"]
-        section = classification["section"]
-        returned_ids.append(paragraph_index)
+    part_assignments: list[dict[str, Any]] = []
+    paragraphs: list[Paragraph] = []
+    for row in rows:
+        section = row[part_column]
         if section not in allowed_sections:
             raise ValueError(
-                f"Unsupported section at paragraph {paragraph_index}: "
-                f"{section!r}"
+                f"Unsupported upstream part at paragraph "
+                f"{row['paragraph_index']}: {section!r}"
             )
-        section_labels.append(section)
-    if returned_ids != expected_ids:
-        raise ValueError(
-            "paragraph_classification must contain every document paragraph "
-            f"once and in order: expected {expected_ids}, got {returned_ids}"
-        )
-
-    section_ids: dict[int, int] = {}
-    current_section_id = -1
-    previous_label: str | None = None
-    for paragraph_id, label in zip(returned_ids, section_labels):
-        if label != previous_label:
-            current_section_id += 1
-            previous_label = label
-        section_ids[paragraph_id] = current_section_id
-    return normalized, section_ids
-
-
-def generate_validated_batch(
-    model_pipe,
-    tokenizer,
-    messages: list[dict[str, Any]],
-    targets: Sequence[Paragraph],
-    extraction_schema: pa.Schema,
-    previous_section_id: int | None,
-    settings: ExtractionSettings,
-) -> tuple[list[dict[str, Any]], int]:
-    input_tokens = count_message_tokens(tokenizer, messages)
-    if input_tokens + settings.max_new_tokens > settings.model_context_tokens:
-        paragraph_ids = [value.paragraph_id for value in targets]
-        raise ValueError(
-            f"Prompt for target paragraphs {paragraph_ids} exceeds the model "
-            "context; the document is not truncated"
-        )
-
-    attempt_messages = list(messages)
-    last_error: Exception | None = None
-    for attempt in range(settings.json_retries + 1):
-        result = model_pipe(
-            text=attempt_messages,
-            return_full_text=False,
-        )
-        response_text = extract_generated_text(result)
-        try:
-            payload = parse_json_response(response_text)
-            return validate_model_payload(
-                payload,
-                targets,
-                extraction_schema,
-                previous_section_id,
+        paragraphs.append(
+            Paragraph(
+                paragraph_id=row["paragraph_index"],
+                paragraph_order=row["paragraph_order"],
+                text=row["text"],
             )
-        except Exception as exc:
-            last_error = exc
-            if attempt >= settings.json_retries:
-                break
-            attempt_messages = [
-                *messages,
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": response_text}
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                f"The response was invalid: {exc}. Return a "
-                                "corrected JSON object only, following the "
-                                "original contract exactly."
-                            ),
-                        }
-                    ],
-                },
-            ]
-    raise RuntimeError(
-        "Model did not return schema-valid JSON"
-    ) from last_error
-
-
-def generate_validated_document(
-    model_pipe,
-    tokenizer,
-    messages: list[dict[str, Any]],
-    paragraphs: Sequence[Paragraph],
-    extraction_schema: pa.Schema,
-    settings: ExtractionSettings,
-) -> tuple[dict[str, Any], dict[int, int]]:
-    input_tokens = count_message_tokens(tokenizer, messages)
-    if input_tokens + settings.max_new_tokens > settings.model_context_tokens:
-        raise ValueError(
-            f"Complete document prompt uses {input_tokens} input tokens; "
-            f"with max_new_tokens={settings.max_new_tokens} it exceeds "
-            f"model_context_tokens={settings.model_context_tokens}"
         )
-
-    attempt_messages = list(messages)
-    last_error: Exception | None = None
-    last_response = ""
-    for attempt in range(settings.json_retries + 1):
-        result = model_pipe(
-            text=attempt_messages,
-            return_full_text=False,
+        part_assignments.append(
+            {
+                "paragraph_index": row["paragraph_index"],
+                "section": section,
+            }
         )
-        last_response = extract_generated_text(result)
-        try:
-            payload = parse_json_response(last_response)
-            return validate_document_payload(
-                payload,
-                paragraphs,
-                extraction_schema,
-            )
-        except Exception as exc:
-            last_error = exc
-            if attempt >= settings.json_retries:
-                break
-            attempt_messages = [
-                *messages,
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": last_response}
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                f"The response was invalid: {exc}. Return a "
-                                "corrected document-level JSON object only, "
-                                "following the original contract exactly."
-                            ),
-                        }
-                    ],
-                },
-            ]
-    response_is_complete = last_response.rstrip().endswith("}")
-    preview = last_response[:500].replace("\n", "\\n")
-    truncation_hint = (
-        f" Response appears truncated at max_new_tokens="
-        f"{settings.max_new_tokens}; increase the generation budget."
-        if not response_is_complete
-        else ""
-    )
-    raise RuntimeError(
-        "Model did not return schema-valid JSON after "
-        f"{settings.json_retries + 1} attempts. Last error: "
-        f"{type(last_error).__name__}: {last_error}. "
-        f"Response characters: {len(last_response)}. "
-        f"Ended with closing brace: {response_is_complete}."
-        f"{truncation_hint} "
-        f"Response preview: {preview!r}"
-    ) from last_error
-
-
-def extract_document_rows(
-    document_id: str,
-    paragraphs: Sequence[Paragraph],
-    model_pipe,
-    tokenizer,
-    settings: ExtractionSettings,
-) -> list[dict[str, Any]]:
-    settings.validate(production=True)
-    if not paragraphs:
-        raise ValueError(f"Document {document_id} contains no paragraphs")
-
-    # Document-level extraction requires the model to see every paragraph in a
-    # single request. The context-limit check fails
-    # explicitly if the complete document and response budget do not fit.
-    batch = ParagraphBatch(context=(), targets=tuple(paragraphs))
-    messages = build_messages(
-        settings.prompt,
-        settings.extraction_schema,
-        batch,
-        known_section_ids={},
-    )
-    document_extraction, _section_ids = generate_validated_document(
-        model_pipe,
-        tokenizer,
-        messages,
-        paragraphs,
-        settings.extraction_schema,
-        settings=settings,
-    )
-    # Paragraphs are an internal prompt/indexing mechanism. Persist the complete
-    # document and its single document-level extraction as exactly one row.
-    return [
-        {
-            "document_id": str(document_id),
-            "text": "\n\n".join(
-                paragraph.text for paragraph in paragraphs
-            ),
-            **{
-                name: document_extraction[name]
-                for name in settings.extraction_schema.names
-            },
-        }
-    ]
-
-
-def rows_to_parquet_bytes(
-    rows: Sequence[Mapping[str, Any]],
-    output_schema: pa.Schema,
-    compression: str,
-) -> bytes:
-    table = pa.Table.from_pylist(list(rows), schema=output_schema)
-    buffer = io.BytesIO()
-    pq.write_table(
-        table,
-        buffer,
-        compression=compression,
-        use_dictionary=True,
-        write_statistics=True,
-    )
-    return buffer.getvalue()
-
-
-def parse_document_to_parquet(
-    document_id: str,
-    rtf_bytes: bytes,
-    model_pipe,
-    tokenizer,
-    settings: ExtractionSettings,
-) -> tuple[bytes, int]:
-    paragraphs = rtf_bytes_to_paragraphs(rtf_bytes)
-    rows = extract_document_rows(
-        document_id,
-        paragraphs,
-        model_pipe,
-        tokenizer,
-        settings,
-    )
-    return (
-        rows_to_parquet_bytes(
-            rows,
-            settings.output_schema,
-            settings.parquet_compression,
-        ),
-        len(paragraphs),
-    )
+    return tuple(paragraphs), part_assignments

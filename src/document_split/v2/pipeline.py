@@ -7,9 +7,9 @@ from tqdm.auto import tqdm
 
 from ..cloud import (
     RunLogger,
-    download_source_rtf,
-    iter_document_ids,
-    source_object_path,
+    download_part_document_parquet,
+    iter_part_document_ids,
+    part_document_object_path,
     upload_parquet_atomically,
 )
 from ..config import ExtractionSettings, StorageSettings
@@ -22,12 +22,14 @@ from .cloud import (
     v2_result_object_path,
 )
 from .document import finalize_v2_document
-from .handlers import build_default_v2_chain
+from .handlers import build_parts_v2_chain
 from .settings import (
     DEFAULT_V2_CHAIN_SETTINGS,
     DEFAULT_V2_EXTRACTION_SETTINGS,
+    DEFAULT_V2_PART_PROCESSING_PROMPTS,
     DEFAULT_V2_STORAGE_SETTINGS,
     V2ChainSettings,
+    V2PartProcessingPrompts,
     validate_v2_extraction_settings,
 )
 from .state import V2DocumentState, V2HandlerContext
@@ -39,16 +41,21 @@ def run_v2_pipeline(
     ),
     storage_settings: StorageSettings = DEFAULT_V2_STORAGE_SETTINGS,
     chain_settings: V2ChainSettings = DEFAULT_V2_CHAIN_SETTINGS,
+    part_prompts: V2PartProcessingPrompts = (
+        DEFAULT_V2_PART_PROCESSING_PROMPTS
+    ),
 ) -> dict[str, int]:
     validate_v2_extraction_settings(extraction_settings)
     storage_settings.validate()
     chain_settings.validate()
+    part_prompts.validate(production=True)
     clients = load_colab_clients(storage_settings)
     revision, manifest = prepare_v2_manifest(
         clients.storage,
         extraction_settings,
         storage_settings,
         chain_settings,
+        part_prompts,
         clients.hf_token,
     )
     print(
@@ -65,8 +72,9 @@ def run_v2_pipeline(
         tokenizer=tokenizer,
         extraction_settings=extraction_settings,
         chain_settings=chain_settings,
+        include_base_prompt=False,
     )
-    chain = build_default_v2_chain()
+    chain = build_parts_v2_chain(part_prompts)
     logger = RunLogger(
         storage_client=clients.storage,
         bucket_name=storage_settings.destination_bucket,
@@ -96,7 +104,7 @@ def run_v2_pipeline(
                 if storage_settings.skip_existing
                 else set()
             )
-            document_ids = iter_document_ids(
+            document_ids = iter_part_document_ids(
                 clients.bigquery,
                 storage_settings.bigquery_table,
                 justice_kind,
@@ -122,6 +130,11 @@ def run_v2_pipeline(
                     storage_settings.version_prefix,
                     justice_kind,
                     document_id,
+                    source_object=part_document_object_path(
+                        storage_settings.parts_prefix,
+                        justice_kind,
+                        document_id,
+                    ),
                 )
                 result_path = v2_result_object_path(
                     storage_settings.version_prefix,
@@ -130,11 +143,14 @@ def run_v2_pipeline(
                 )
                 state: V2DocumentState | None = None
                 try:
-                    raw_rtf = download_source_rtf(
-                        clients.storage,
-                        storage_settings.source_bucket,
-                        justice_kind,
-                        document_id,
+                    parts_parquet_bytes = (
+                        download_part_document_parquet(
+                            clients.storage,
+                            storage_settings.parts_bucket,
+                            storage_settings.parts_prefix,
+                            justice_kind,
+                            document_id,
+                        )
                     )
                     with tempfile.TemporaryDirectory(
                         prefix=f"document-v2-{document_id}-"
@@ -142,8 +158,9 @@ def run_v2_pipeline(
                         state = V2DocumentState(
                             document_id=str(document_id),
                             justice_kind=int(justice_kind),
-                            raw_rtf=raw_rtf,
+                            raw_rtf=b"",
                             work_dir=Path(temp_dir),
+                            parts_parquet_bytes=parts_parquet_bytes,
                         )
                         try:
                             chain.handle(state, context)
@@ -207,7 +224,8 @@ def run_v2_pipeline(
                             "status": "failed",
                             "document_id": document_id,
                             "justice_kind": justice_kind,
-                            "source_object": source_object_path(
+                            "source_object": part_document_object_path(
+                                storage_settings.parts_prefix,
                                 justice_kind,
                                 document_id,
                             ),

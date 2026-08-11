@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -10,13 +9,6 @@ from typing import Any, Iterator, Mapping
 import pyarrow as pa
 from google.api_core.exceptions import PreconditionFailed
 from google.cloud import bigquery, storage
-from huggingface_hub import model_info
-
-from .config import ExtractionSettings, StorageSettings
-
-
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def canonical_schema_text(schema: pa.Schema) -> str:
@@ -26,152 +18,22 @@ def canonical_schema_text(schema: pa.Schema) -> str:
     )
 
 
-def build_manifest_identity(
-    extraction: ExtractionSettings,
-    storage_settings: StorageSettings,
-    model_revision: str,
-) -> dict[str, Any]:
-    schema_text = canonical_schema_text(extraction.output_schema)
-    return {
-        "info_version": storage_settings.version_prefix,
-        "prompt": extraction.prompt,
-        "prompt_sha256": _sha256_text(extraction.prompt),
-        "arrow_schema": schema_text,
-        "arrow_schema_sha256": _sha256_text(schema_text),
-        "model": {
-            "id": extraction.model_id,
-            "revision": model_revision,
-            "dtype": "bfloat16",
-            "task": "image-text-to-text",
-        },
-        "document_processing": {
-            "model_input_unit": "complete_document",
-            "model_response_unit": "document",
-            "parquet_row_unit": "document",
-            "paragraph_ids_start_at": 1,
-            "section_ids_start_at": 0,
-            "model_context_tokens": extraction.model_context_tokens,
-        },
-        "generation": {
-            "max_new_tokens": extraction.max_new_tokens,
-            "do_sample": False,
-            "json_retries": extraction.json_retries,
-        },
-        "parquet": {"compression": extraction.parquet_compression},
-    }
-
-
-def prepare_version_manifest(
-    storage_client: storage.Client,
-    extraction: ExtractionSettings,
-    storage_settings: StorageSettings,
-    hf_token: str | None,
-) -> tuple[str, dict[str, Any]]:
-    bucket = storage_client.bucket(storage_settings.destination_bucket)
-    manifest_path = f"{storage_settings.version_prefix}/manifest.json"
-    blob = bucket.blob(manifest_path)
-
-    if blob.exists(client=storage_client):
-        manifest = json.loads(blob.download_as_text())
-        existing_identity = manifest.get("identity")
-        if not isinstance(existing_identity, dict):
-            raise RuntimeError(
-                f"Malformed research manifest: gs://{bucket.name}/{manifest_path}"
-            )
-        existing_revision = existing_identity.get("model", {}).get(
-            "revision"
-        )
-        if not existing_revision:
-            raise RuntimeError(
-                "Existing manifest does not contain a pinned model revision"
-            )
-        if (
-            extraction.model_revision
-            and extraction.model_revision != existing_revision
-        ):
-            raise RuntimeError(
-                "Configured model revision differs from the immutable "
-                "version manifest"
-            )
-        expected = build_manifest_identity(
-            extraction,
-            storage_settings,
-            existing_revision,
-        )
-        if existing_identity != expected:
-            raise RuntimeError(
-                f"Research settings differ from {manifest_path}; "
-                "choose a new info version"
-            )
-        return existing_revision, manifest
-
-    resolved_revision = extraction.model_revision
-    if resolved_revision is None:
-        resolved_revision = model_info(
-            extraction.model_id,
-            token=hf_token,
-        ).sha
-    if not resolved_revision:
-        raise RuntimeError("Could not resolve an immutable model revision")
-
-    identity = build_manifest_identity(
-        extraction,
-        storage_settings,
-        resolved_revision,
-    )
-    manifest = {
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "identity": identity,
-    }
-    payload = json.dumps(
-        manifest,
-        ensure_ascii=False,
-        indent=2,
-        sort_keys=True,
-    ).encode("utf-8")
-    try:
-        blob.upload_from_string(
-            payload,
-            content_type="application/json; charset=utf-8",
-            if_generation_match=0,
-        )
-    except PreconditionFailed:
-        return prepare_version_manifest(
-            storage_client,
-            extraction,
-            storage_settings,
-            hf_token,
-        )
-    return resolved_revision, manifest
-
-
-def source_object_path(justice_kind: int, document_id: str) -> str:
-    return f"{int(justice_kind)}/{document_id}.rtf"
-
-
-def destination_object_path(
-    version_prefix: str,
-    justice_kind: int,
-    document_id: str,
-) -> str:
-    return (
-        f"{version_prefix.strip('/')}/{int(justice_kind)}/"
-        f"{document_id}.parquet"
-    )
-
-
-def iter_document_ids(
+def iter_part_document_ids(
     bq_client: bigquery.Client,
     table_id: str,
     justice_kind: int,
     page_size: int,
     limit: int | None = None,
 ) -> Iterator[str]:
+    """Yield documents whose upstream paragraph-part file is ready."""
+
     limit_clause = "" if limit is None else f"LIMIT {int(limit)}"
     query = f"""
         SELECT DISTINCT CAST(doc_id AS STRING) AS document_id
         FROM `{table_id}`
-        WHERE doc_id IS NOT NULL AND justice_kind = @justice_kind
+        WHERE doc_id IS NOT NULL
+          AND justice_kind = @justice_kind
+          AND is_classified = TRUE
         ORDER BY document_id
         {limit_clause}
     """
@@ -191,28 +53,29 @@ def iter_document_ids(
         yield str(row.document_id)
 
 
-def list_completed_document_ids(
-    storage_client: storage.Client,
-    bucket_name: str,
-    version_prefix: str,
+def part_document_object_path(
+    parts_prefix: str,
     justice_kind: int,
-) -> set[str]:
-    prefix = f"{version_prefix.strip('/')}/{int(justice_kind)}/"
-    completed: set[str] = set()
-    for blob in storage_client.list_blobs(bucket_name, prefix=prefix):
-        relative = blob.name[len(prefix) :]
-        if "/" not in relative and relative.endswith(".parquet"):
-            completed.add(relative[: -len(".parquet")])
-    return completed
+    document_id: str,
+) -> str:
+    return (
+        f"{parts_prefix.strip('/')}/{int(justice_kind)}/"
+        f"{document_id}/classification.parquet"
+    )
 
 
-def download_source_rtf(
+def download_part_document_parquet(
     storage_client: storage.Client,
     bucket_name: str,
+    parts_prefix: str,
     justice_kind: int,
     document_id: str,
 ) -> bytes:
-    object_path = source_object_path(justice_kind, document_id)
+    object_path = part_document_object_path(
+        parts_prefix,
+        justice_kind,
+        document_id,
+    )
     blob = storage_client.bucket(bucket_name).blob(object_path)
     if not blob.exists(client=storage_client):
         raise FileNotFoundError(f"gs://{bucket_name}/{object_path}")

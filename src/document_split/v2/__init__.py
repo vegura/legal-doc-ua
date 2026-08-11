@@ -1,11 +1,6 @@
-from .document import finalize_v2_document, process_v2_document
-from .document_classification import (
-    ALLOWED_SECTIONS,
-    CLASSIFICATION_SCHEMA,
-    DEFAULT_DOCUMENT_CLASSIFICATION_SETTINGS,
-    DOCUMENT_PART_CLASSIFICATION_PROMPT,
-    DocumentClassificationSettings,
-    classify_paragraph_parquet,
+from .document import (
+    finalize_v2_document,
+    process_parts_v2_document,
 )
 from .document_text_parsing import (
     DEFAULT_DOCUMENT_TEXT_PARSING_SETTINGS,
@@ -19,76 +14,77 @@ from .document_text_parsing import (
     parse_document_to_artifacts,
 )
 from .handlers import (
-    CaseAndParagraphClassificationHandler,
+    PartParagraphParquetHandler,
     CourtReasoningPartHandler,
     IntroductoryPartHandler,
     PlaceholderPromptHandler,
     ResultPartHandler,
-    RtfToParagraphParquetHandler,
     V2Handler,
-    build_default_v2_chain,
+    build_parts_v2_chain,
+    group_selected_paragraphs,
     merge_v2_values,
-)
-from .prompts import (
-    CASE_CLASSIFICATION_PROMPT,
-    COURT_REASONING_PART_PROMPT,
-    INTRODUCTORY_PART_PROMPT,
-    PLACEHOLDER_HANDLER_PROMPT,
-    RESULT_PART_PROMPT,
+    normalize_sequential_parts,
 )
 from .settings import (
     DEFAULT_V2_CHAIN_SETTINGS,
     DEFAULT_V2_EXTRACTION_SETTINGS,
+    DEFAULT_V2_PART_PROCESSING_PROMPTS,
     DEFAULT_V2_STORAGE_SETTINGS,
+    SAMPLE_V2_PART_PROCESSING_PROMPTS,
+    PART_PROCESSING_PROMPT_PLACEHOLDER,
+    V2_DISTRIBUTED_INFO_VERSION,
     V2_INFO_VERSION,
     V2ChainSettings,
+    V2PartProcessingMode,
+    V2PartProcessingPrompts,
     validate_v2_extraction_settings,
+)
+from .sample_processing import (
+    SampleProcessingContext,
+    build_sample_processing_contexts,
 )
 from .state import V2DocumentState, V2HandlerContext
 
 __all__ = [
-    "CASE_CLASSIFICATION_PROMPT",
-    "ALLOWED_SECTIONS",
-    "CLASSIFICATION_SCHEMA",
-    "COURT_REASONING_PART_PROMPT",
-    "CaseAndParagraphClassificationHandler",
+    "PartParagraphParquetHandler",
     "CourtReasoningPartHandler",
     "DEFAULT_DOCUMENT_TEXT_PARSING_SETTINGS",
-    "DEFAULT_DOCUMENT_CLASSIFICATION_SETTINGS",
     "DEFAULT_V2_CHAIN_SETTINGS",
     "DEFAULT_V2_EXTRACTION_SETTINGS",
+    "DEFAULT_V2_PART_PROCESSING_PROMPTS",
     "DEFAULT_V2_STORAGE_SETTINGS",
-    "INTRODUCTORY_PART_PROMPT",
     "IntroductoryPartHandler",
     "DOCUMENT_TEXT_PARSING_ROOT",
-    "DOCUMENT_PART_CLASSIFICATION_PROMPT",
-    "DocumentClassificationSettings",
     "DocumentTextParsingClients",
     "DocumentTextParsingSettings",
     "PARAGRAPH_SCHEMA",
-    "PLACEHOLDER_HANDLER_PROMPT",
+    "PART_PROCESSING_PROMPT_PLACEHOLDER",
     "PlaceholderPromptHandler",
-    "RESULT_PART_PROMPT",
     "ResultPartHandler",
-    "RtfToParagraphParquetHandler",
     "V2ChainSettings",
+    "V2PartProcessingMode",
+    "V2PartProcessingPrompts",
     "V2DocumentState",
     "V2Handler",
     "V2HandlerContext",
     "V2_INFO_VERSION",
-    "build_default_v2_chain",
+    "V2_DISTRIBUTED_INFO_VERSION",
+    "SAMPLE_V2_PART_PROCESSING_PROMPTS",
+    "SampleProcessingContext",
+    "build_parts_v2_chain",
+    "build_sample_processing_contexts",
+    "group_selected_paragraphs",
+    "normalize_sequential_parts",
     "create_bigquery_client",
     "create_google_cloud_clients",
     "create_storage_client",
-    "classify_paragraph_parquet",
     "create_v2_document_folder",
     "finalize_v2_document",
     "list_completed_v2_document_ids",
     "merge_v2_values",
     "parse_document_to_artifacts",
-    "process_v2_document",
+    "process_parts_v2_document",
     "run_document_text_parsing_pipeline",
-    "run_document_classification_pipeline",
     "run_v2_pipeline",
     "v2_document_prefix",
     "v2_result_object_path",
@@ -105,14 +101,6 @@ def run_v2_pipeline(*args, **kwargs):
 def run_document_text_parsing_pipeline(*args, **kwargs):
     from .document_text_parsing import (
         run_document_text_parsing_pipeline as _run,
-    )
-
-    return _run(*args, **kwargs)
-
-
-def run_document_classification_pipeline(*args, **kwargs):
-    from .document_classification import (
-        run_document_classification_pipeline as _run,
     )
 
     return _run(*args, **kwargs)

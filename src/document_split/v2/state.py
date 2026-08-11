@@ -16,7 +16,9 @@ class V2DocumentState:
     justice_kind: int
     raw_rtf: bytes
     work_dir: Path
+    parts_parquet_bytes: bytes | None = None
     paragraphs: tuple[Paragraph, ...] = ()
+    part_assignments: list[dict[str, Any]] = field(default_factory=list)
     numbered_text: str = ""
     extraction: dict[str, Any] = field(default_factory=dict)
     handler_outputs: dict[str, Any] = field(default_factory=dict)
@@ -58,3 +60,4 @@ class V2HandlerContext:
     tokenizer: Any
     extraction_settings: ExtractionSettings
     chain_settings: V2ChainSettings
+    include_base_prompt: bool = True

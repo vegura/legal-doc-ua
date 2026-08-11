@@ -10,15 +10,9 @@ from google.api_core.exceptions import PreconditionFailed
 from google.cloud import storage
 from huggingface_hub import model_info
 
-from ..cloud import canonical_schema_text, source_object_path
+from ..cloud import canonical_schema_text
 from ..config import ExtractionSettings, StorageSettings
-from .prompts import (
-    CASE_CLASSIFICATION_PROMPT,
-    COURT_REASONING_PART_PROMPT,
-    INTRODUCTORY_PART_PROMPT,
-    RESULT_PART_PROMPT,
-)
-from .settings import V2ChainSettings
+from .settings import V2ChainSettings, V2PartProcessingPrompts
 
 
 def v2_document_prefix(
@@ -49,6 +43,7 @@ def create_v2_document_folder(
     version_prefix: str,
     justice_kind: int,
     document_id: str,
+    source_object: str,
 ) -> str:
     prefix = v2_document_prefix(
         version_prefix,
@@ -59,7 +54,7 @@ def create_v2_document_folder(
     marker = {
         "document_id": str(document_id),
         "justice_kind": int(justice_kind),
-        "source_object": source_object_path(justice_kind, document_id),
+        "source_object": source_object,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     blob = storage_client.bucket(bucket_name).blob(marker_path)
@@ -122,18 +117,16 @@ def build_v2_manifest_identity(
     extraction_settings: ExtractionSettings,
     storage_settings: StorageSettings,
     chain_settings: V2ChainSettings,
+    part_prompts: V2PartProcessingPrompts,
     model_revision: str,
 ) -> dict[str, Any]:
     schema_text = canonical_schema_text(
         extraction_settings.output_schema
     )
     prompts = {
-        "case_and_paragraph_classification": (
-            CASE_CLASSIFICATION_PROMPT
-        ),
-        "introductory_part": INTRODUCTORY_PART_PROMPT,
-        "court_reasoning_part": COURT_REASONING_PART_PROMPT,
-        "result_part": RESULT_PART_PROMPT,
+        "introductory_part": part_prompts.introductory,
+        "court_reasoning_part": part_prompts.reasoning,
+        "result_part": part_prompts.operative,
     }
     prompts_text = json.dumps(
         prompts,
@@ -158,11 +151,21 @@ def build_v2_manifest_identity(
         "batching": {
             "target_batch_tokens": chain_settings.target_batch_tokens,
             "overlap_tokens": chain_settings.overlap_tokens,
+            "part_processing_mode": chain_settings.part_processing_mode,
             "max_new_tokens": extraction_settings.max_new_tokens,
+        },
+        "parts_input": {
+            "bucket": storage_settings.parts_bucket,
+            "prefix": storage_settings.parts_prefix.strip("/"),
+            "object_path": (
+                "{prefix}/{justice_kind}/{document_id}/"
+                "classification.parquet"
+            ),
+            "bigquery_filter": "is_classified = TRUE",
         },
         "artifacts": {
             "document_folder": True,
-            "paragraphs": "paragraphs.parquet",
+            "parts_source": "source_parts.parquet",
             "final": "result.parquet",
             "parquet_row_unit": "document",
         },
@@ -174,6 +177,7 @@ def prepare_v2_manifest(
     extraction_settings: ExtractionSettings,
     storage_settings: StorageSettings,
     chain_settings: V2ChainSettings,
+    part_prompts: V2PartProcessingPrompts,
     hf_token: str | None,
 ) -> tuple[str, dict[str, Any]]:
     bucket = storage_client.bucket(storage_settings.destination_bucket)
@@ -192,6 +196,7 @@ def prepare_v2_manifest(
             extraction_settings,
             storage_settings,
             chain_settings,
+            part_prompts,
             revision,
         )
         if identity != expected:
@@ -213,6 +218,7 @@ def prepare_v2_manifest(
         extraction_settings,
         storage_settings,
         chain_settings,
+        part_prompts,
         revision,
     )
     manifest = {
@@ -236,6 +242,7 @@ def prepare_v2_manifest(
             extraction_settings,
             storage_settings,
             chain_settings,
+            part_prompts,
             hf_token,
         )
     return str(revision), manifest
