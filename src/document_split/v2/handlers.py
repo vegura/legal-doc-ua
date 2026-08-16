@@ -15,6 +15,7 @@ from ..processing import (
     count_message_tokens,
     extract_generated_text,
     normalize_arrow_value,
+    normalize_known_document_layout,
     paragraph_block,
     parse_json_response,
     read_part_paragraphs_parquet,
@@ -549,6 +550,7 @@ def normalize_v2_payload(
 ) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise TypeError("Handler response must be a JSON object")
+    payload = normalize_known_document_layout(payload, schema)
     unexpected = set(payload) - set(schema.names)
     if unexpected:
         raise ValueError(

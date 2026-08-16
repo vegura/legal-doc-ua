@@ -429,29 +429,31 @@ def normalize_known_document_layout(
         return normalized_payload
     operative_fields = {field.name for field in operative_field.type}
 
-    conviction_field = operative_field.type.field("conviction_operative")
-    if not pa.types.is_struct(conviction_field.type):
-        return normalized_payload
-    conviction_fields = {field.name for field in conviction_field.type}
-
     operative = dict(operative_value)
-    conviction_value = operative.get("conviction_operative")
-    if not isinstance(conviction_value, Mapping):
-        return normalized_payload
-    conviction = dict(conviction_value)
+    for nested_field_name in (
+        "conviction_operative",
+        "acquittal_operative",
+    ):
+        nested_field = operative_field.type.field(nested_field_name)
+        if not pa.types.is_struct(nested_field.type):
+            continue
+        nested_fields = {field.name for field in nested_field.type}
+        nested_value = operative.get(nested_field_name)
+        if not isinstance(nested_value, Mapping):
+            continue
+        nested = dict(nested_value)
+        misplaced = (set(nested) - nested_fields) & operative_fields
+        for field_name in misplaced:
+            field_value = nested.pop(field_name)
+            if field_name in operative:
+                if operative[field_name] != field_value:
+                    raise ValueError(
+                        f"Conflicting values for operative_part.{field_name}"
+                    )
+            else:
+                operative[field_name] = field_value
+        operative[nested_field_name] = nested
 
-    misplaced = (set(conviction) - conviction_fields) & operative_fields
-    for field_name in misplaced:
-        nested_value = conviction.pop(field_name)
-        if field_name in operative:
-            if operative[field_name] != nested_value:
-                raise ValueError(
-                    f"Conflicting values for operative_part.{field_name}"
-                )
-        else:
-            operative[field_name] = nested_value
-
-    operative["conviction_operative"] = conviction
     normalized_payload["operative_part"] = operative
     return normalized_payload
 
