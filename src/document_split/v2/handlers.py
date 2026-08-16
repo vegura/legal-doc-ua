@@ -175,6 +175,9 @@ class PromptWiredHandler(V2Handler, ABC):
         )
         state.model_calls += 1
         response_text = extract_generated_text(response)
+        state.artifact_path(
+            f"handlers/{self.handler_name}/batch-{batch_index:04d}-raw.txt"
+        ).write_text(response_text, encoding="utf-8")
         try:
             payload = parse_json_response(response_text)
         except Exception as exc:
