@@ -400,7 +400,15 @@ def compose_v2_handler_messages(
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    part_assignments = state.part_assignments
+    visible_ids = {
+        paragraph.paragraph_id
+        for paragraph in (*batch.context, *batch.targets)
+    }
+    part_assignments = [
+        assignment
+        for assignment in state.part_assignments
+        if assignment["paragraph_index"] in visible_ids
+    ]
     user_text = f"""The document is represented as a numbered paragraph list.
 All paragraph indexes are global and must remain unchanged.
 
