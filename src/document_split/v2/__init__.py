@@ -41,9 +41,17 @@ from .settings import (
 )
 from .sample_processing import (
     SampleProcessingContext,
+    SmokeDocumentResult,
+    build_schema_population_report,
     build_sample_processing_contexts,
+    run_real_data_smoke,
 )
 from .state import V2DocumentState, V2HandlerContext
+from .prompts import (
+    INTRODUCTORY_PART_PROMPT,
+    REASONING_PART_PROMPT,
+    RESOLUTION_PART_PROMPT,
+)
 
 __all__ = [
     "PartParagraphParquetHandler",
@@ -59,6 +67,9 @@ __all__ = [
     "DocumentTextParsingSettings",
     "PARAGRAPH_SCHEMA",
     "PART_PROCESSING_PROMPT_PLACEHOLDER",
+    "INTRODUCTORY_PART_PROMPT",
+    "REASONING_PART_PROMPT",
+    "RESOLUTION_PART_PROMPT",
     "PlaceholderPromptHandler",
     "ResultPartHandler",
     "V2ChainSettings",
@@ -71,6 +82,8 @@ __all__ = [
     "V2_DISTRIBUTED_INFO_VERSION",
     "SAMPLE_V2_PART_PROCESSING_PROMPTS",
     "SampleProcessingContext",
+    "SmokeDocumentResult",
+    "build_schema_population_report",
     "build_parts_v2_chain",
     "build_sample_processing_contexts",
     "group_selected_paragraphs",
@@ -85,6 +98,7 @@ __all__ = [
     "parse_document_to_artifacts",
     "process_parts_v2_document",
     "run_document_text_parsing_pipeline",
+    "run_real_data_smoke",
     "run_v2_pipeline",
     "v2_document_prefix",
     "v2_result_object_path",

@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from .prompts import (
+    INTRODUCTORY_PART_PROMPT,
+    REASONING_PART_PROMPT,
+    RESOLUTION_PART_PROMPT,
+)
 from ..config import (
     CRIMINAL_SCHEMA,
     DEFAULT_EXTRACTION_PROMPT,
@@ -23,9 +28,9 @@ V2PartProcessingMode = Literal["filtered", "sequential"]
 class V2PartProcessingPrompts:
     """User-owned ontology instructions for each routed document part."""
 
-    introductory: str = PART_PROCESSING_PROMPT_PLACEHOLDER
-    reasoning: str = PART_PROCESSING_PROMPT_PLACEHOLDER
-    operative: str = PART_PROCESSING_PROMPT_PLACEHOLDER
+    introductory: str = INTRODUCTORY_PART_PROMPT
+    reasoning: str = REASONING_PART_PROMPT
+    operative: str = RESOLUTION_PART_PROMPT
 
     def validate(self, *, production: bool) -> None:
         for name, prompt in (
