@@ -64,6 +64,7 @@ CRIMINAL_SCHEMA = pa.schema([
         pa.field("court_reasoning_arguments", pa.list_(
             pa.struct([
                 pa.field("paragraph_index", pa.int32()),
+                pa.field("source_quote", pa.string()),
                 pa.field("argument_type", pa.string()),
                 pa.field("argument", pa.string()),
                 pa.field("legal_references", pa.list_(pa.string())),
@@ -72,10 +73,12 @@ CRIMINAL_SCHEMA = pa.schema([
         pa.field("acquittal_reasoning", pa.struct([
             pa.field("unproven_charge", pa.string()),
             pa.field("acquittal_grounds", pa.string()),
+            pa.field("source_quote", pa.string()),
             pa.field("rejected_prosecution_evidence_reasons", pa.string()),
             pa.field("other_decision_reasons", pa.string()),
         ])),
         pa.field("conviction_reasoning", pa.struct([
+            pa.field("source_quote", pa.string()),
             pa.field("proven_charge", pa.string()),
             pa.field("offense_place", pa.string()),
             pa.field("offense_time", pa.string()),
@@ -84,6 +87,7 @@ CRIMINAL_SCHEMA = pa.schema([
             pa.field("form_of_guilt", pa.string()),
             pa.field("offense_motive", pa.string()),
             pa.field("conviction_law_articles", pa.list_(pa.struct([
+                pa.field("source_quote", pa.string()),
                 pa.field("paragraph", pa.string()),
                 pa.field("part", pa.string()),
                 pa.field("article", pa.string()),
@@ -91,6 +95,7 @@ CRIMINAL_SCHEMA = pa.schema([
                 pa.field("adoption_date", pa.string()),
             ]))),
             pa.field("supporting_evidence", pa.list_(pa.struct([
+                pa.field("source_quote", pa.string()),
                 pa.field("paragraph_index", pa.int32()),
                 pa.field("evidence_type", pa.string()),
                 pa.field("evidence", pa.string()),
@@ -98,12 +103,14 @@ CRIMINAL_SCHEMA = pa.schema([
                 pa.field("court_assessment", pa.string()),
             ]))),
             pa.field("rejected_evidence_reasons", pa.list_(pa.struct([
+                pa.field("source_quote", pa.string()),
                 pa.field("paragraph_index", pa.int32()),
                 pa.field("evidence", pa.string()),
                 pa.field("reason", pa.string()),
                 pa.field("decision", pa.string()),
             ]))),
             pa.field("charge_change_reasons", pa.list_(pa.struct([
+                pa.field("source_quote", pa.string()),
                 pa.field("paragraph_index", pa.int32()),
                 pa.field("original_charge", pa.string()),
                 pa.field("changed_charge", pa.string()),
@@ -111,24 +118,28 @@ CRIMINAL_SCHEMA = pa.schema([
                 pa.field("legal_basis", pa.string()),
             ]))),
             pa.field("unsubstantiated_charge_reasons", pa.list_(pa.struct([
+                pa.field("source_quote", pa.string()),
                 pa.field("paragraph_index", pa.int32()),
                 pa.field("charge", pa.string()),
                 pa.field("reason", pa.string()),
                 pa.field("outcome", pa.string()),
             ]))),
             pa.field("mitigating_circumstances", pa.list_(pa.struct([
+                pa.field("source_quote", pa.string()),
                 pa.field("paragraph_index", pa.int32()),
                 pa.field("circumstance", pa.string()),
                 pa.field("court_conclusion", pa.string()),
                 pa.field("legal_basis", pa.string()),
             ]))),
             pa.field("aggravating_circumstances", pa.list_(pa.struct([
+                pa.field("source_quote", pa.string()),
                 pa.field("paragraph_index", pa.int32()),
                 pa.field("circumstance", pa.string()),
                 pa.field("court_conclusion", pa.string()),
                 pa.field("legal_basis", pa.string()),
             ]))),
             pa.field("sentencing_reasons", pa.list_(pa.struct([
+                pa.field("source_quote", pa.string()),
                 pa.field("paragraph_index", pa.int32()),
                 pa.field("reason_type", pa.string()),
                 pa.field("reason", pa.string()),

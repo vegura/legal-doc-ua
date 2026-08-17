@@ -410,6 +410,20 @@ def normalize_arrow_value(
             )
             for index, item in enumerate(value)
         ]
+    if pa.types.is_string(data_type) or pa.types.is_large_string(data_type):
+        # Models occasionally represent multiple references for a scalar text
+        # field as a JSON array even though the response contract says string.
+        # Preserve that text deterministically without accepting arbitrary
+        # objects or mixed-type arrays as valid strings.
+        if isinstance(value, list) and all(
+            item is None or isinstance(item, str) for item in value
+        ):
+            parts = [
+                item.strip()
+                for item in value
+                if isinstance(item, str) and item.strip()
+            ]
+            return "; ".join(parts) if parts else None
     return value
 
 

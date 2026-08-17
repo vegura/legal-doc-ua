@@ -252,6 +252,17 @@ class SectionExtractionHandler(PromptWiredHandler):
                     payload,
                     self.output_schema,
                 )
+                normalized[self.field_name] = (
+                    _drop_out_of_batch_paragraph_records(
+                        normalized[self.field_name],
+                        {
+                            paragraph.paragraph_id
+                            for paragraph in batch.targets
+                        },
+                        path=self.field_name,
+                        warnings=state.warnings,
+                    )
+                )
                 _validate_nested_paragraph_indexes(
                     normalized[self.field_name],
                     {
@@ -678,3 +689,50 @@ def _validate_nested_paragraph_indexes(
                 target_ids,
                 path=f"{path}[{index}]",
             )
+
+
+def _drop_out_of_batch_paragraph_records(
+    value: Any,
+    target_ids: set[int],
+    *,
+    path: str,
+    warnings: list[str],
+) -> Any:
+    """Discard model records assigned to paragraphs outside this batch."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: _drop_out_of_batch_paragraph_records(
+                child,
+                target_ids,
+                path=f"{path}.{key}",
+                warnings=warnings,
+            )
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        cleaned: list[Any] = []
+        for index, child in enumerate(value):
+            child_path = f"{path}[{index}]"
+            if isinstance(child, Mapping) and "paragraph_index" in child:
+                paragraph_index = child["paragraph_index"]
+                if (
+                    type(paragraph_index) is not int
+                    or paragraph_index not in target_ids
+                ):
+                    warnings.append(
+                        f"Dropped {child_path} with out-of-batch "
+                        f"paragraph_index={paragraph_index!r}; expected one "
+                        f"of {sorted(target_ids)}"
+                    )
+                    continue
+            cleaned.append(
+                _drop_out_of_batch_paragraph_records(
+                    child,
+                    target_ids,
+                    path=child_path,
+                    warnings=warnings,
+                )
+            )
+        return cleaned
+    return value
