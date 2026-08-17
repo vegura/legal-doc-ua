@@ -346,6 +346,7 @@ class SectionExtractionHandler(PromptWiredHandler):
                     normalized["observations"],
                     batch.targets,
                     section_path=self.field_name,
+                    warnings=state.warnings,
                 )
                 observations.extend(batch_observations)
 
@@ -1002,6 +1003,7 @@ def _validate_map_observations(
     targets: Sequence[Paragraph],
     *,
     section_path: str,
+    warnings: list[str],
 ) -> list[dict[str, Any]]:
     """Require every map candidate to be grounded in its claimed target."""
 
@@ -1012,6 +1014,13 @@ def _validate_map_observations(
     for index, observation in enumerate(observations):
         path = f"observations[{index}]"
         paragraph_index = observation["paragraph_index"]
+        extraction = observation["extraction"]
+        if not _value_has_content(extraction):
+            warnings.append(
+                f"Dropped {section_path} {path} for paragraph "
+                f"{paragraph_index}: extraction has no populated values"
+            )
+            continue
         paragraph = targets_by_id.get(paragraph_index)
         if paragraph is None:
             raise ValueError(
@@ -1029,9 +1038,6 @@ def _validate_map_observations(
                 f"{path}.source_quote is not an exact quote from paragraph "
                 f"{paragraph_index}: {preview!r}"
             )
-        extraction = observation["extraction"]
-        if not _value_has_content(extraction):
-            raise ValueError(f"{path}.extraction has no populated values")
         _validate_nested_paragraph_indexes(
             extraction,
             {paragraph_index},
