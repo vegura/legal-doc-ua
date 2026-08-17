@@ -156,6 +156,7 @@ def build_v2_manifest_identity(
             "max_new_tokens": extraction_settings.max_new_tokens,
             "temperature": extraction_settings.temperature,
             "do_sample": extraction_settings.temperature > 0,
+            "json_retries": extraction_settings.json_retries,
         },
         "parts_input": {
             "bucket": storage_settings.parts_bucket,

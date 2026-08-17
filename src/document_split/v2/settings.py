@@ -54,7 +54,7 @@ class V2PartProcessingPrompts:
 class V2ChainSettings:
     target_batch_tokens: int = 6_000
     overlap_tokens: int = 256
-    part_processing_mode: V2PartProcessingMode = "filtered"
+    part_processing_mode: V2PartProcessingMode = "sequential"
 
     def validate(self) -> None:
         if self.target_batch_tokens <= 0:
@@ -87,7 +87,7 @@ DEFAULT_V2_EXTRACTION_SETTINGS = ExtractionSettings(
     prompt=DEFAULT_EXTRACTION_PROMPT,
     extraction_schema=CRIMINAL_SCHEMA,
     max_new_tokens=8_192,
-    json_retries=0,
+    json_retries=1,
 )
 DEFAULT_V2_STORAGE_SETTINGS = StorageSettings(
     info_version=V2_DISTRIBUTED_INFO_VERSION,

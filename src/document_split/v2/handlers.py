@@ -187,9 +187,28 @@ class PromptWiredHandler(V2Handler, ABC):
                 f"{context.extraction_settings.max_new_tokens}"
             )
 
+        generation_kwargs: dict[str, Any] = {
+            "max_new_tokens": (
+                context.extraction_settings.max_new_tokens
+            ),
+            "do_sample": context.extraction_settings.temperature > 0,
+        }
+        if context.extraction_settings.temperature > 0:
+            generation_kwargs["temperature"] = (
+                context.extraction_settings.temperature
+            )
+        state.write_json_artifact(
+            f"handlers/{self.handler_name}/{artifact_stem}-input.json",
+            {
+                "messages": list(messages),
+                "generation_kwargs": generation_kwargs,
+                "target_paragraph_ids": list(target_ids),
+            },
+        )
         response = context.model_pipe(
             text=messages,
             return_full_text=False,
+            generate_kwargs=generation_kwargs,
         )
         state.model_calls += 1
         response_text = extract_generated_text(response)
@@ -232,6 +251,8 @@ class SectionExtractionHandler(PromptWiredHandler):
         *,
         processing_part_index: int,
         processing_part_count: int,
+        attempt: int,
+        validation_feedback: str | None,
     ) -> dict[str, Any]:
         messages = compose_v2_map_messages(
             state=state,
@@ -245,6 +266,7 @@ class SectionExtractionHandler(PromptWiredHandler):
             section_field=CRIMINAL_SCHEMA.field(self.field_name),
             processing_part_index=processing_part_index,
             processing_part_count=processing_part_count,
+            validation_feedback=validation_feedback,
         )
         target_ids = [
             paragraph.paragraph_id for paragraph in batch.targets
@@ -253,8 +275,12 @@ class SectionExtractionHandler(PromptWiredHandler):
             state,
             context,
             messages,
-            artifact_stem=f"map-batch-{batch_index:04d}",
-            call_description=f"map batch {batch_index}",
+            artifact_stem=(
+                f"map-batch-{batch_index:04d}-attempt-{attempt:02d}"
+            ),
+            call_description=(
+                f"map batch {batch_index} attempt {attempt}"
+            ),
             target_ids=target_ids,
         )
 
@@ -330,24 +356,53 @@ class SectionExtractionHandler(PromptWiredHandler):
         ):
             for batch in self._batches(processing_part, context):
                 batch_index += 1
-                payload = self._call_map_model(
-                    state,
-                    context,
-                    batch,
-                    batch_index,
-                    processing_part_index=part_index,
-                    processing_part_count=len(processing_parts),
+                validation_feedback: str | None = None
+                max_attempts = (
+                    context.extraction_settings.json_retries + 1
                 )
-                normalized = normalize_v2_payload(
-                    payload,
-                    self.map_schema,
-                )
-                batch_observations = _validate_map_observations(
-                    normalized["observations"],
-                    batch.targets,
-                    section_path=self.field_name,
-                    warnings=state.warnings,
-                )
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        payload = self._call_map_model(
+                            state,
+                            context,
+                            batch,
+                            batch_index,
+                            processing_part_index=part_index,
+                            processing_part_count=len(processing_parts),
+                            attempt=attempt,
+                            validation_feedback=validation_feedback,
+                        )
+                        normalized = normalize_v2_payload(
+                            payload,
+                            self.map_schema,
+                        )
+                        batch_observations = _validate_map_observations(
+                            normalized["observations"],
+                            batch.targets,
+                            section_path=self.field_name,
+                            warnings=state.warnings,
+                        )
+                    except (RuntimeError, TypeError, ValueError) as exc:
+                        if (
+                            isinstance(exc, RuntimeError)
+                            and "returned invalid JSON" not in str(exc)
+                        ) or (
+                            isinstance(exc, ValueError)
+                            and "exceeds the model context" in str(exc)
+                        ):
+                            raise
+                        if attempt >= max_attempts:
+                            raise
+                        validation_feedback = (
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                        state.warnings.append(
+                            f"Retrying {self.handler_name} map batch "
+                            f"{batch_index} after rejected attempt "
+                            f"{attempt}: {validation_feedback}"
+                        )
+                        continue
+                    break
                 observations.extend(batch_observations)
 
         state.write_json_artifact(
@@ -518,6 +573,7 @@ def compose_v2_map_messages(
     section_field: pa.Field,
     processing_part_index: int = 1,
     processing_part_count: int = 1,
+    validation_feedback: str | None = None,
 ) -> list[dict[str, Any]]:
     """Compose one paragraph-grounded map request."""
 
@@ -544,6 +600,13 @@ def compose_v2_map_messages(
         ensure_ascii=False,
         separators=(",", ":"),
     )
+    retry_text = (
+        "\nPREVIOUS ATTEMPT REJECTED:\n"
+        f"{validation_feedback}\n"
+        "Regenerate the entire response and correct that validation error.\n"
+        if validation_feedback
+        else ""
+    )
     user_text = f"""PROCESSING STAGE:
 MAP
 
@@ -564,15 +627,19 @@ TARGET PARAGRAPHS:
 
 UPSTREAM PARAGRAPH PARTS (routing metadata; do not return them):
 {json.dumps(part_assignments, ensure_ascii=False, separators=(",", ":"))}
+{retry_text}
 
 Return paragraph-grounded candidate observations only.
 
 For every observation:
 - paragraph_index must be copied from the target paragraph_id tag;
-- source_quote must be an exact non-empty quotation from that same target;
+- source_quote must be copied character-for-character from that same target,
+  including punctuation and original word forms; never paraphrase or correct it;
 - extraction is a partial value for {section_field.name}, without the outer
   {section_field.name} wrapper;
 - include only fields directly supported by source_quote;
+- each observation may contain facts from exactly one target paragraph;
+- every nested paragraph_index must equal the observation paragraph_index;
 - if one paragraph supports several observations, reuse the same paragraph ID;
 - never increment paragraph IDs for sentences inside one paragraph;
 - never copy field definitions or instructions as extracted values.
