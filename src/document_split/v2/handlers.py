@@ -151,6 +151,27 @@ class PromptWiredHandler(V2Handler, ABC):
             processing_part_index=processing_part_index,
             processing_part_count=processing_part_count,
         )
+        return self._invoke_model(
+            state,
+            context,
+            messages,
+            artifact_stem=f"batch-{batch_index:04d}",
+            call_description=f"batch {batch_index}",
+            target_ids=[
+                paragraph.paragraph_id for paragraph in batch.targets
+            ],
+        )
+
+    def _invoke_model(
+        self,
+        state: V2DocumentState,
+        context: V2HandlerContext,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        artifact_stem: str,
+        call_description: str,
+        target_ids: Sequence[int],
+    ) -> dict[str, Any]:
         input_tokens = count_message_tokens(
             context.tokenizer,
             messages,
@@ -159,11 +180,8 @@ class PromptWiredHandler(V2Handler, ABC):
             input_tokens + context.extraction_settings.max_new_tokens
             > context.extraction_settings.model_context_tokens
         ):
-            target_ids = [
-                paragraph.paragraph_id for paragraph in batch.targets
-            ]
             raise ValueError(
-                f"{self.handler_name} batch {batch_index} for paragraphs "
+                f"{self.handler_name} {call_description} for paragraphs "
                 f"{target_ids} exceeds the model context: input_tokens="
                 f"{input_tokens}, max_new_tokens="
                 f"{context.extraction_settings.max_new_tokens}"
@@ -176,18 +194,18 @@ class PromptWiredHandler(V2Handler, ABC):
         state.model_calls += 1
         response_text = extract_generated_text(response)
         state.artifact_path(
-            f"handlers/{self.handler_name}/batch-{batch_index:04d}-raw.txt"
+            f"handlers/{self.handler_name}/{artifact_stem}-raw.txt"
         ).write_text(response_text, encoding="utf-8")
         try:
             payload = parse_json_response(response_text)
         except Exception as exc:
             preview = response_text[:500].replace("\n", "\\n")
             raise RuntimeError(
-                f"{self.handler_name} batch {batch_index} returned invalid "
+                f"{self.handler_name} {call_description} returned invalid "
                 f"JSON: {type(exc).__name__}: {exc}. Preview: {preview!r}"
             ) from exc
         state.write_json_artifact(
-            f"handlers/{self.handler_name}/batch-{batch_index:04d}.json",
+            f"handlers/{self.handler_name}/{artifact_stem}.json",
             payload,
         )
         return payload
@@ -200,6 +218,74 @@ class SectionExtractionHandler(PromptWiredHandler):
     @property
     def output_schema(self) -> pa.Schema:
         return pa.schema([CRIMINAL_SCHEMA.field(self.field_name)])
+
+    @property
+    def map_schema(self) -> pa.Schema:
+        return build_v2_map_schema(CRIMINAL_SCHEMA.field(self.field_name))
+
+    def _call_map_model(
+        self,
+        state: V2DocumentState,
+        context: V2HandlerContext,
+        batch: ParagraphBatch,
+        batch_index: int,
+        *,
+        processing_part_index: int,
+        processing_part_count: int,
+    ) -> dict[str, Any]:
+        messages = compose_v2_map_messages(
+            state=state,
+            batch=batch,
+            base_prompt=(
+                context.extraction_settings.prompt
+                if context.include_base_prompt
+                else ""
+            ),
+            handler_prompt=self.handler_prompt,
+            section_field=CRIMINAL_SCHEMA.field(self.field_name),
+            processing_part_index=processing_part_index,
+            processing_part_count=processing_part_count,
+        )
+        target_ids = [
+            paragraph.paragraph_id for paragraph in batch.targets
+        ]
+        return self._invoke_model(
+            state,
+            context,
+            messages,
+            artifact_stem=f"map-batch-{batch_index:04d}",
+            call_description=f"map batch {batch_index}",
+            target_ids=target_ids,
+        )
+
+    def _call_reduce_model(
+        self,
+        state: V2DocumentState,
+        context: V2HandlerContext,
+        paragraphs: Sequence[Paragraph],
+        observations: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        messages = compose_v2_reduce_messages(
+            state=state,
+            paragraphs=paragraphs,
+            observations=observations,
+            base_prompt=(
+                context.extraction_settings.prompt
+                if context.include_base_prompt
+                else ""
+            ),
+            handler_prompt=self.handler_prompt,
+            output_schema=self.output_schema,
+        )
+        target_ids = [paragraph.paragraph_id for paragraph in paragraphs]
+        return self._invoke_model(
+            state,
+            context,
+            messages,
+            artifact_stem="reduce",
+            call_description="reduce stage",
+            target_ids=target_ids,
+        )
 
     def transform(
         self,
@@ -231,7 +317,12 @@ class SectionExtractionHandler(PromptWiredHandler):
             )
             return state
 
-        merged: Any = None
+        selected_paragraphs = tuple(
+            paragraph
+            for paragraph in state.paragraphs
+            if paragraph.paragraph_id in selected_ids
+        )
+        observations: list[dict[str, Any]] = []
         batch_index = 0
         for part_index, processing_part in enumerate(
             processing_parts,
@@ -239,53 +330,58 @@ class SectionExtractionHandler(PromptWiredHandler):
         ):
             for batch in self._batches(processing_part, context):
                 batch_index += 1
-                payload = self._call_model(
+                payload = self._call_map_model(
                     state,
                     context,
                     batch,
-                    self.output_schema,
                     batch_index,
                     processing_part_index=part_index,
                     processing_part_count=len(processing_parts),
                 )
                 normalized = normalize_v2_payload(
                     payload,
-                    self.output_schema,
+                    self.map_schema,
                 )
-                normalized[self.field_name] = (
-                    _drop_out_of_batch_paragraph_records(
-                        normalized[self.field_name],
-                        {
-                            paragraph.paragraph_id
-                            for paragraph in batch.targets
-                        },
-                        path=self.field_name,
-                        warnings=state.warnings,
-                    )
+                batch_observations = _validate_map_observations(
+                    normalized["observations"],
+                    batch.targets,
+                    section_path=self.field_name,
                 )
-                _validate_nested_paragraph_indexes(
-                    normalized[self.field_name],
-                    {
-                        paragraph.paragraph_id
-                        for paragraph in batch.targets
-                    },
-                    path=self.field_name,
-                )
-                merged = merge_v2_values(
-                    merged,
-                    normalized[self.field_name],
-                    path=self.field_name,
-                    warnings=state.warnings,
-                )
+                observations.extend(batch_observations)
+
+        state.write_json_artifact(
+            f"handlers/{self.handler_name}/map-observations.json",
+            {"observations": observations},
+        )
+        reduced_payload = self._call_reduce_model(
+            state,
+            context,
+            selected_paragraphs,
+            observations,
+        )
+        normalized = normalize_v2_payload(
+            reduced_payload,
+            self.output_schema,
+        )
+        reduced = normalized[self.field_name]
+        observation_ids = {
+            observation["paragraph_index"]
+            for observation in observations
+        }
+        _validate_nested_paragraph_indexes(
+            reduced,
+            observation_ids,
+            path=self.field_name,
+        )
 
         schema_field = self.output_schema.field(self.field_name)
         validate_arrow_value(
-            merged,
+            reduced,
             schema_field,
             self.field_name,
         )
-        result = {self.field_name: merged}
-        state.extraction[self.field_name] = merged
+        result = {self.field_name: reduced}
+        state.extraction[self.field_name] = reduced
         state.handler_outputs[self.handler_name] = result
         state.write_json_artifact(
             f"handlers/{self.handler_name}/result.json",
@@ -385,6 +481,246 @@ class PlaceholderPromptHandler(PromptWiredHandler):
             batch_results,
         )
         return state
+
+
+def build_v2_map_schema(section_field: pa.Field) -> pa.Schema:
+    """Build the grounded observation contract used by map calls."""
+
+    observation_type = pa.struct(
+        [
+            pa.field("paragraph_index", pa.int32(), nullable=False),
+            pa.field("source_quote", pa.string(), nullable=False),
+            pa.field(
+                "extraction",
+                section_field.type,
+                nullable=False,
+            ),
+        ]
+    )
+    return pa.schema(
+        [
+            pa.field(
+                "observations",
+                pa.list_(observation_type),
+                nullable=False,
+            )
+        ]
+    )
+
+
+def compose_v2_map_messages(
+    *,
+    state: V2DocumentState,
+    batch: ParagraphBatch,
+    base_prompt: str,
+    handler_prompt: str,
+    section_field: pa.Field,
+    processing_part_index: int = 1,
+    processing_part_count: int = 1,
+) -> list[dict[str, Any]]:
+    """Compose one paragraph-grounded map request."""
+
+    context_text = "\n".join(
+        paragraph_block(paragraph) for paragraph in batch.context
+    )
+    target_text = "\n".join(
+        paragraph_block(paragraph) for paragraph in batch.targets
+    )
+    target_ids = [
+        paragraph.paragraph_id for paragraph in batch.targets
+    ]
+    visible_ids = {
+        paragraph.paragraph_id
+        for paragraph in (*batch.context, *batch.targets)
+    }
+    part_assignments = [
+        assignment
+        for assignment in state.part_assignments
+        if assignment["paragraph_index"] in visible_ids
+    ]
+    contract = json.dumps(
+        build_response_contract(build_v2_map_schema(section_field)),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    user_text = f"""PROCESSING STAGE:
+MAP
+
+ACTIVE OUTPUT FIELD:
+"{section_field.name}"
+
+PROCESSING PART:
+{processing_part_index} of {processing_part_count}
+
+TARGET PARAGRAPH IDS:
+{target_ids}
+
+CONTEXT PARAGRAPHS (read-only; do not extract observations from these):
+{context_text or "(none)"}
+
+TARGET PARAGRAPHS:
+{target_text}
+
+UPSTREAM PARAGRAPH PARTS (routing metadata; do not return them):
+{json.dumps(part_assignments, ensure_ascii=False, separators=(",", ":"))}
+
+Return paragraph-grounded candidate observations only.
+
+For every observation:
+- paragraph_index must be copied from the target paragraph_id tag;
+- source_quote must be an exact non-empty quotation from that same target;
+- extraction is a partial value for {section_field.name}, without the outer
+  {section_field.name} wrapper;
+- include only fields directly supported by source_quote;
+- if one paragraph supports several observations, reuse the same paragraph ID;
+- never increment paragraph IDs for sentences inside one paragraph;
+- never copy field definitions or instructions as extracted values.
+
+If the targets support no extraction, return an empty observations list.
+Return one compact JSON object only, without Markdown or commentary.
+
+JSON CONTRACT:
+{contract}
+"""
+    base_instructions = (
+        "The following canonical prompt is additional reference material:\n\n"
+        f"{base_prompt}\n\n"
+        if base_prompt.strip()
+        else ""
+    )
+    return [
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "You are the MAP stage of a grounded legal-document "
+                        "extraction pipeline.\n\n"
+                        f"{base_instructions}"
+                        "ACTIVE HANDLER INSTRUCTIONS:\n"
+                        f"{handler_prompt}\n\n"
+                        "The field descriptions above are instructions, not "
+                        "document facts. Every non-null candidate must be "
+                        "grounded by an exact source_quote from its declared "
+                        "target paragraph. Follow the JSON contract in the "
+                        "user message."
+                    ),
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": user_text}],
+        },
+    ]
+
+
+def compose_v2_reduce_messages(
+    *,
+    state: V2DocumentState,
+    paragraphs: Sequence[Paragraph],
+    observations: Sequence[Mapping[str, Any]],
+    base_prompt: str,
+    handler_prompt: str,
+    output_schema: pa.Schema,
+) -> list[dict[str, Any]]:
+    """Compose one document-section reduction from validated map results."""
+
+    source_text = "\n".join(
+        paragraph_block(paragraph) for paragraph in paragraphs
+    )
+    target_ids = [paragraph.paragraph_id for paragraph in paragraphs]
+    target_id_set = set(target_ids)
+    part_assignments = [
+        assignment
+        for assignment in state.part_assignments
+        if assignment["paragraph_index"] in target_id_set
+    ]
+    compact_observations = [
+        compact
+        for observation in observations
+        if (compact := _compact_json_value(observation)) is not None
+    ]
+    contract = json.dumps(
+        build_response_contract(output_schema),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    user_text = f"""PROCESSING STAGE:
+REDUCE
+
+ACTIVE OUTPUT FIELD:
+"{output_schema.names[0]}"
+
+TARGET PARAGRAPH IDS:
+{target_ids}
+
+AUTHORITATIVE SOURCE PARAGRAPHS:
+{source_text}
+
+UPSTREAM PARAGRAPH PARTS (routing metadata; do not return them):
+{json.dumps(part_assignments, ensure_ascii=False, separators=(",", ":"))}
+
+VALIDATED MAP OBSERVATIONS:
+{json.dumps(compact_observations, ensure_ascii=False, separators=(",", ":"))}
+
+Create the single canonical section result from the authoritative source and
+the grounded map observations. Resolve duplicates and conflicts using the
+source paragraphs, never string length or batch order.
+
+Rules:
+- map observations are candidates; source paragraphs are authoritative;
+- populate only facts represented by a validated map observation; use the
+  source paragraphs to verify and resolve those candidates, not to invent new
+  un-mapped facts;
+- never introduce a date, number, legal provision, person, disposition, or
+  conclusion that is absent from the source paragraphs;
+- every final paragraph_index must belong to a validated map observation;
+- preserve global paragraph IDs and reuse an ID for multiple records from the
+  same paragraph;
+- return null for unsupported fields;
+- field descriptions and headings are instructions, never output values;
+- source_quote is map-stage provenance only and must not appear in the final
+  result because it is not part of the final schema;
+- return only the active output field required by the JSON contract.
+
+Return one compact JSON object only, without Markdown or commentary.
+
+FINAL JSON CONTRACT:
+{contract}
+"""
+    base_instructions = (
+        "The following canonical prompt is additional reference material:\n\n"
+        f"{base_prompt}\n\n"
+        if base_prompt.strip()
+        else ""
+    )
+    return [
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "You are the REDUCE stage of a grounded legal-document "
+                        "extraction pipeline.\n\n"
+                        f"{base_instructions}"
+                        "ACTIVE HANDLER INSTRUCTIONS:\n"
+                        f"{handler_prompt}\n\n"
+                        "Produce one source-grounded canonical result. The "
+                        "source_quote instruction applies only to map "
+                        "observations; do not add source_quote to the final "
+                        "schema."
+                    ),
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": user_text}],
+        },
+    ]
 
 
 def compose_v2_handler_messages(
@@ -659,6 +995,88 @@ def build_parts_v2_chain(
     introductory.set_next(reasoning)
     reasoning.set_next(result)
     return root
+
+
+def _validate_map_observations(
+    observations: Sequence[Mapping[str, Any]],
+    targets: Sequence[Paragraph],
+    *,
+    section_path: str,
+) -> list[dict[str, Any]]:
+    """Require every map candidate to be grounded in its claimed target."""
+
+    targets_by_id = {
+        paragraph.paragraph_id: paragraph for paragraph in targets
+    }
+    validated: list[dict[str, Any]] = []
+    for index, observation in enumerate(observations):
+        path = f"observations[{index}]"
+        paragraph_index = observation["paragraph_index"]
+        paragraph = targets_by_id.get(paragraph_index)
+        if paragraph is None:
+            raise ValueError(
+                f"{path}.paragraph_index must reference one of "
+                f"{sorted(targets_by_id)}, got {paragraph_index!r}"
+            )
+        source_quote = observation["source_quote"]
+        normalized_quote = _normalize_grounding_text(source_quote)
+        normalized_source = _normalize_grounding_text(paragraph.text)
+        if not normalized_quote:
+            raise ValueError(f"{path}.source_quote cannot be empty")
+        if normalized_quote not in normalized_source:
+            preview = source_quote[:160].replace("\n", "\\n")
+            raise ValueError(
+                f"{path}.source_quote is not an exact quote from paragraph "
+                f"{paragraph_index}: {preview!r}"
+            )
+        extraction = observation["extraction"]
+        if not _value_has_content(extraction):
+            raise ValueError(f"{path}.extraction has no populated values")
+        _validate_nested_paragraph_indexes(
+            extraction,
+            {paragraph_index},
+            path=f"{path}.extraction.{section_path}",
+        )
+        validated.append(dict(observation))
+    return validated
+
+
+def _normalize_grounding_text(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _value_has_content(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return any(_value_has_content(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_value_has_content(child) for child in value)
+    return True
+
+
+def _compact_json_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        compact = {
+            key: compact_child
+            for key, child in value.items()
+            if (compact_child := _compact_json_value(child)) is not None
+        }
+        return compact or None
+    if isinstance(value, list):
+        compact = [
+            compact_child
+            for child in value
+            if (compact_child := _compact_json_value(child)) is not None
+        ]
+        return compact or None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
 
 
 def _validate_nested_paragraph_indexes(

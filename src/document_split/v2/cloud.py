@@ -152,6 +152,7 @@ def build_v2_manifest_identity(
             "target_batch_tokens": chain_settings.target_batch_tokens,
             "overlap_tokens": chain_settings.overlap_tokens,
             "part_processing_mode": chain_settings.part_processing_mode,
+            "processing_strategy": "grounded_map_reduce",
             "max_new_tokens": extraction_settings.max_new_tokens,
         },
         "parts_input": {

@@ -13,7 +13,8 @@ from ..processing import (
     read_part_paragraphs_parquet,
 )
 from .handlers import (
-    compose_v2_handler_messages,
+    build_v2_map_schema,
+    compose_v2_map_messages,
     group_selected_paragraphs,
     normalize_sequential_parts,
 )
@@ -30,7 +31,7 @@ from .state import V2DocumentState
 
 @dataclass(frozen=True)
 class SampleProcessingContext:
-    """One ready-to-send LLM context for a filtered document part."""
+    """One ready-to-send map-stage context for a document part."""
 
     processor_name: str
     target_paragraph_ids: tuple[int, ...]
@@ -279,16 +280,20 @@ def build_sample_processing_contexts(
                             paragraph.paragraph_id
                             for paragraph in batch.targets
                         ),
-                        messages=compose_v2_handler_messages(
+                        messages=compose_v2_map_messages(
                             state=state,
                             batch=batch,
                             base_prompt="",
                             handler_prompt=prompt,
-                            output_schema=output_schema,
+                            section_field=output_schema.field(
+                                processor_name
+                            ),
                             processing_part_index=part_index,
                             processing_part_count=len(processing_parts),
                         ),
-                        output_schema=output_schema,
+                        output_schema=build_v2_map_schema(
+                            output_schema.field(processor_name)
+                        ),
                         processing_part_index=part_index,
                         processing_part_count=len(processing_parts),
                     )
