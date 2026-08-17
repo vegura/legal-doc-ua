@@ -154,6 +154,8 @@ def build_v2_manifest_identity(
             "part_processing_mode": chain_settings.part_processing_mode,
             "processing_strategy": "grounded_map_reduce",
             "max_new_tokens": extraction_settings.max_new_tokens,
+            "temperature": extraction_settings.temperature,
+            "do_sample": extraction_settings.temperature > 0,
         },
         "parts_input": {
             "bucket": storage_settings.parts_bucket,

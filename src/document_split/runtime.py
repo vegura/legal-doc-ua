@@ -75,7 +75,10 @@ def load_extraction_model(
     # Transformers releases.
     model_pipe.generation_config.max_new_tokens = settings.max_new_tokens
     model_pipe.generation_config.max_length = None
-    model_pipe.generation_config.do_sample = False
+    model_pipe.generation_config.do_sample = settings.temperature > 0
+    model_pipe.generation_config.temperature = (
+        settings.temperature if settings.temperature > 0 else 1.0
+    )
 
     tokenizer = getattr(model_pipe, "tokenizer", None)
     if tokenizer is None:

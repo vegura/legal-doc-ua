@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import pyarrow as pa
 
-from ..config import CRIMINAL_SCHEMA
+from ..config import CRIMINAL_SCHEMA, ExtractionSettings
 from ..processing import (
     build_paragraph_batches,
     read_part_paragraphs_parquet,
@@ -127,6 +127,9 @@ def run_real_data_smoke(
     model_pipe: Any,
     tokenizer: Any,
     justice_kind: int = 2,
+    extraction_settings: ExtractionSettings = (
+        DEFAULT_V2_EXTRACTION_SETTINGS
+    ),
     chain_settings: V2ChainSettings = DEFAULT_V2_CHAIN_SETTINGS,
     part_prompts: V2PartProcessingPrompts = (
         DEFAULT_V2_PART_PROCESSING_PROMPTS
@@ -156,7 +159,7 @@ def run_real_data_smoke(
             work_dir=artifact_dir,
             model_pipe=model_pipe,
             tokenizer=tokenizer,
-            extraction_settings=DEFAULT_V2_EXTRACTION_SETTINGS,
+            extraction_settings=extraction_settings,
             chain_settings=chain_settings,
             part_prompts=part_prompts,
             production=True,

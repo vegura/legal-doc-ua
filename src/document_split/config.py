@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass
 
 import pyarrow as pa
@@ -226,6 +227,7 @@ class ExtractionSettings:
     model_revision: str | None = MODEL_REVISION
     model_context_tokens: int = 131_072
     max_new_tokens: int = 32_768
+    temperature: float = 0.0
     json_retries: int = 0
     parquet_compression: str = "zstd"
 
@@ -253,6 +255,8 @@ class ExtractionSettings:
             raise ValueError("Extraction field names must be unique")
         if self.max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be positive")
+        if not math.isfinite(self.temperature) or self.temperature < 0:
+            raise ValueError("temperature must be finite and non-negative")
         if self.json_retries < 0:
             raise ValueError("json_retries cannot be negative")
         if self.parquet_compression not in {"zstd", "gzip", "snappy"}:

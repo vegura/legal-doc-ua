@@ -58,6 +58,11 @@ def finalize_v2_document(
             "document_id": state.document_id,
             "paragraph_count": len(state.paragraphs),
             "model_calls": state.model_calls,
+            "generation": {
+                "max_new_tokens": extraction_settings.max_new_tokens,
+                "temperature": extraction_settings.temperature,
+                "do_sample": extraction_settings.temperature > 0,
+            },
             "warnings": state.warnings,
             "handlers": list(state.handler_outputs),
         },
