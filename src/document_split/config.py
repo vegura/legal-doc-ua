@@ -87,7 +87,6 @@ CRIMINAL_SCHEMA = pa.schema([
             pa.field("other_decision_reasons", pa.string()),
         ])),
         pa.field("conviction_reasoning", pa.struct([
-            pa.field("source_quote", pa.string()),
             pa.field("proven_charge", pa.string()),
             pa.field("offense_place", pa.string()),
             pa.field("offense_time", pa.string()),

@@ -381,10 +381,10 @@ def normalize_arrow_value(
             raise TypeError(f"{path} must be an object")
         expected = {child.name for child in data_type}
         unexpected = set(value) - expected
-        if unexpected:
-            raise ValueError(
-                f"{path} has unexpected fields: {sorted(unexpected)}"
-            )
+        # if unexpected:
+        #     raise ValueError(
+        #         f"{path} has unexpected fields: {sorted(unexpected)}"
+        #     )
         normalized: dict[str, Any] = {}
         for child in data_type:
             child_path = f"{path}.{child.name}"

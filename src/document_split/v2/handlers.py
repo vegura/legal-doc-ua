@@ -559,6 +559,7 @@ def build_v2_map_schema(section_field: pa.Field) -> pa.Schema:
             ),
         ]
     )
+
     return pa.schema(
         [
             pa.field(
