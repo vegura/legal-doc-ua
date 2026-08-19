@@ -29,7 +29,8 @@ from .settings import (
 )
 
 
-V2_MAP_GROUNDING_VERSION = 2
+V2_MAP_GROUNDING_VERSION = 3
+
 
 class V2Handler(ABC):
     """A chain-of-responsibility transformation over V2DocumentState."""
@@ -550,7 +551,11 @@ def build_v2_map_schema(section_field: pa.Field) -> pa.Schema:
                 section_field.type,
                 nullable=False,
             ),
-            pa.field("conviction_law_articles", pa.list_(pa.string()), nullable=True),
+            pa.field(
+                "conviction_law_articles",
+                pa.list_(pa.string()),
+                nullable=True,
+            ),
         ]
     )
     return pa.schema(
