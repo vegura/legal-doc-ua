@@ -29,6 +29,8 @@ from .settings import (
 )
 
 
+V2_MAP_GROUNDING_VERSION = 2
+
 class V2Handler(ABC):
     """A chain-of-responsibility transformation over V2DocumentState."""
 
@@ -378,7 +380,7 @@ class SectionExtractionHandler(PromptWiredHandler):
                         )
                         batch_observations = _validate_map_observations(
                             normalized["observations"],
-                            batch.targets,
+                            selected_paragraphs,
                             section_path=self.field_name,
                             warnings=state.warnings,
                         )
@@ -420,10 +422,7 @@ class SectionExtractionHandler(PromptWiredHandler):
             self.output_schema,
         )
         reduced = normalized[self.field_name]
-        observation_ids = {
-            observation["paragraph_index"]
-            for observation in observations
-        }
+        observation_ids = _collect_paragraph_indexes(observations)
         _validate_nested_paragraph_indexes(
             reduced,
             observation_ids,
@@ -638,8 +637,9 @@ For every observation:
 - extraction is a partial value for {section_field.name}, without the outer
   {section_field.name} wrapper;
 - include only fields directly supported by source_quote;
-- each observation may contain facts from exactly one target paragraph;
-- every nested paragraph_index must equal the observation paragraph_index;
+- prefer one observation per target paragraph;
+- if a nested record refers to another target paragraph, it must carry that
+  paragraph's ID and its own character-for-character source_quote;
 - if one paragraph supports several observations, reuse the same paragraph ID;
 - never increment paragraph IDs for sentences inside one paragraph;
 - never copy field definitions or instructions as extracted values.
@@ -1105,9 +1105,10 @@ def _validate_map_observations(
                 f"{path}.source_quote is not an exact quote from paragraph "
                 f"{paragraph_index}: {preview!r}"
             )
-        _validate_nested_paragraph_indexes(
+        _validate_nested_map_grounding(
             extraction,
-            {paragraph_index},
+            targets_by_id,
+            outer_paragraph_index=paragraph_index,
             path=f"{path}.extraction.{section_path}",
         )
         validated.append(dict(observation))
@@ -1116,6 +1117,79 @@ def _validate_map_observations(
 
 def _normalize_grounding_text(value: str) -> str:
     return " ".join(value.split())
+
+
+def _validate_nested_map_grounding(
+    value: Any,
+    targets_by_id: Mapping[int, Paragraph],
+    *,
+    outer_paragraph_index: int,
+    path: str,
+) -> None:
+    """Validate nested map records against their own target paragraphs."""
+
+    if isinstance(value, Mapping):
+        record_paragraph_index = value.get("paragraph_index")
+        if "paragraph_index" in value:
+            child_path = f"{path}.paragraph_index"
+            if (
+                type(record_paragraph_index) is not int
+                or record_paragraph_index not in targets_by_id
+            ):
+                raise ValueError(
+                    f"{child_path} must reference a target paragraph from "
+                    f"{sorted(targets_by_id)}, got "
+                    f"{record_paragraph_index!r}"
+                )
+            source_quote = value.get("source_quote")
+            if record_paragraph_index != outer_paragraph_index and (
+                not isinstance(source_quote, str) or not source_quote.strip()
+            ):
+                raise ValueError(
+                    f"{path}.source_quote is required when nested "
+                    f"paragraph_index={record_paragraph_index} differs "
+                    f"from outer paragraph {outer_paragraph_index}"
+                )
+            if isinstance(source_quote, str) and source_quote.strip():
+                normalized_quote = _normalize_grounding_text(source_quote)
+                normalized_source = _normalize_grounding_text(
+                    targets_by_id[record_paragraph_index].text
+                )
+                if normalized_quote not in normalized_source:
+                    preview = source_quote[:160].replace("\n", "\\n")
+                    raise ValueError(
+                        f"{path}.source_quote is not an exact quote from "
+                        f"paragraph {record_paragraph_index}: {preview!r}"
+                    )
+        for key, child in value.items():
+            _validate_nested_map_grounding(
+                child,
+                targets_by_id,
+                outer_paragraph_index=outer_paragraph_index,
+                path=f"{path}.{key}",
+            )
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_nested_map_grounding(
+                child,
+                targets_by_id,
+                outer_paragraph_index=outer_paragraph_index,
+                path=f"{path}[{index}]",
+            )
+
+
+def _collect_paragraph_indexes(value: Any) -> set[int]:
+    indexes: set[int] = set()
+    if isinstance(value, Mapping):
+        paragraph_index = value.get("paragraph_index")
+        if type(paragraph_index) is int:
+            indexes.add(paragraph_index)
+        for child in value.values():
+            indexes.update(_collect_paragraph_indexes(child))
+    elif isinstance(value, list):
+        for child in value:
+            indexes.update(_collect_paragraph_indexes(child))
+    return indexes
 
 
 def _value_has_content(value: Any) -> bool:
