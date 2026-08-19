@@ -638,14 +638,19 @@ Return paragraph-grounded candidate observations only.
 
 For every observation:
 - paragraph_index must be copied from the target paragraph_id tag;
-- source_quote must be copied character-for-character from that same target,
-  including punctuation and original word forms; never paraphrase or correct it;
+- source_quote must be the shortest contiguous passage that directly supports
+  the extracted fields, copied character-for-character from that same target;
+- do not copy the full paragraph when a smaller relevant passage is sufficient;
+- never paraphrase, correct, summarize, or join non-contiguous passages inside
+  one source_quote; create separate observations when separate passages are
+  needed;
 - extraction is a partial value for {section_field.name}, without the outer
   {section_field.name} wrapper;
 - include only fields directly supported by source_quote;
 - prefer one observation per target paragraph;
+- every nested source_quote follows the same minimal contiguous-passage rule;
 - if a nested record refers to another target paragraph, it must carry that
-  paragraph's ID and its own character-for-character source_quote;
+  paragraph's ID and its own minimal character-for-character source_quote;
 - if one paragraph supports several observations, reuse the same paragraph ID;
 - never increment paragraph IDs for sentences inside one paragraph;
 - never copy field definitions or instructions as extracted values.
@@ -1100,17 +1105,12 @@ def _validate_map_observations(
                 f"{path}.paragraph_index must reference one of "
                 f"{sorted(targets_by_id)}, got {paragraph_index!r}"
             )
-        source_quote = observation["source_quote"]
-        normalized_quote = _normalize_grounding_text(source_quote)
-        normalized_source = _normalize_grounding_text(paragraph.text)
-        if not normalized_quote:
-            raise ValueError(f"{path}.source_quote cannot be empty")
-        if normalized_quote not in normalized_source:
-            preview = source_quote[:160].replace("\n", "\\n")
-            raise ValueError(
-                f"{path}.source_quote is not an exact quote from paragraph "
-                f"{paragraph_index}: {preview!r}"
-            )
+        _validate_grounded_source_quote(
+            observation["source_quote"],
+            paragraph.text,
+            path=f"{path}.source_quote",
+            paragraph_index=paragraph_index,
+        )
         _validate_nested_map_grounding(
             extraction,
             targets_by_id,
@@ -1123,6 +1123,67 @@ def _validate_map_observations(
 
 def _normalize_grounding_text(value: str) -> str:
     return " ".join(value.split())
+
+
+def _validate_grounded_source_quote(
+    source_quote: str,
+    paragraph_text: str,
+    *,
+    path: str,
+    paragraph_index: int,
+) -> None:
+    """Validate one relevant quote and expose where a long quote diverges."""
+
+    normalized_quote = _normalize_grounding_text(source_quote)
+    normalized_source = _normalize_grounding_text(paragraph_text)
+    if not normalized_quote:
+        raise ValueError(f"{path} cannot be empty")
+    if normalized_quote in normalized_source:
+        return
+
+    matched_prefix_length = _longest_grounded_prefix_length(
+        normalized_quote,
+        normalized_source,
+    )
+    quote_start = max(0, matched_prefix_length - 40)
+    quote_end = min(len(normalized_quote), matched_prefix_length + 80)
+    quote_context = normalized_quote[quote_start:quote_end]
+
+    matched_prefix = normalized_quote[:matched_prefix_length]
+    source_offset = (
+        normalized_source.find(matched_prefix) if matched_prefix else -1
+    )
+    source_context = ""
+    if source_offset >= 0:
+        mismatch_offset = source_offset + matched_prefix_length
+        source_start = max(0, mismatch_offset - 40)
+        source_end = min(len(normalized_source), mismatch_offset + 80)
+        source_context = normalized_source[source_start:source_end]
+
+    details = (
+        f"matched_prefix_chars={matched_prefix_length}, "
+        f"generated_near_mismatch={quote_context!r}"
+    )
+    if source_context:
+        details += f", paragraph_near_mismatch={source_context!r}"
+    raise ValueError(
+        f"{path} is not an exact quote from paragraph "
+        f"{paragraph_index}: {details}"
+    )
+
+
+def _longest_grounded_prefix_length(quote: str, source: str) -> int:
+    """Return the longest prefix of quote occurring contiguously in source."""
+
+    lower = 0
+    upper = len(quote)
+    while lower < upper:
+        candidate = (lower + upper + 1) // 2
+        if quote[:candidate] in source:
+            lower = candidate
+        else:
+            upper = candidate - 1
+    return lower
 
 
 def _validate_nested_map_grounding(
@@ -1157,16 +1218,12 @@ def _validate_nested_map_grounding(
                     f"from outer paragraph {outer_paragraph_index}"
                 )
             if isinstance(source_quote, str) and source_quote.strip():
-                normalized_quote = _normalize_grounding_text(source_quote)
-                normalized_source = _normalize_grounding_text(
-                    targets_by_id[record_paragraph_index].text
+                _validate_grounded_source_quote(
+                    source_quote,
+                    targets_by_id[record_paragraph_index].text,
+                    path=f"{path}.source_quote",
+                    paragraph_index=record_paragraph_index,
                 )
-                if normalized_quote not in normalized_source:
-                    preview = source_quote[:160].replace("\n", "\\n")
-                    raise ValueError(
-                        f"{path}.source_quote is not an exact quote from "
-                        f"paragraph {record_paragraph_index}: {preview!r}"
-                    )
         for key, child in value.items():
             _validate_nested_map_grounding(
                 child,
