@@ -69,6 +69,14 @@ CRIMINAL_SCHEMA = pa.schema([
                 pa.field("argument_type", pa.string()),
                 pa.field("argument", pa.string()),
                 pa.field("legal_references", pa.list_(pa.string())),
+                pa.field("conviction_law_articles", pa.list_(pa.struct([
+                    pa.field("source_quote", pa.string()),
+                    pa.field("paragraph", pa.string()),
+                    pa.field("part", pa.string()),
+                    pa.field("article", pa.string()),
+                    pa.field("act_name", pa.string()),
+                    pa.field("adoption_date", pa.string()),
+                ]))),
             ])
         )),
         pa.field("acquittal_reasoning", pa.struct([
