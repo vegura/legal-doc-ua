@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Mapping, Sequence
 
@@ -638,19 +639,20 @@ Return paragraph-grounded candidate observations only.
 
 For every observation:
 - paragraph_index must be copied from the target paragraph_id tag;
-- source_quote must be the shortest contiguous passage that directly supports
-  the extracted fields, copied character-for-character from that same target;
-- do not copy the full paragraph when a smaller relevant passage is sufficient;
-- never paraphrase, correct, summarize, or join non-contiguous passages inside
-  one source_quote; create separate observations when separate passages are
-  needed;
+- source_quote must contain only the shortest source parts that directly
+  support the extracted fields;
+- prefer one contiguous passage, but irrelevant text may be omitted between
+  relevant parts when every retained word and punctuation mark remains copied
+  character-for-character and in its original order;
+- do not copy the full paragraph when smaller relevant parts are sufficient;
+- never paraphrase, correct, summarize, add, or reorder source text;
 - extraction is a partial value for {section_field.name}, without the outer
   {section_field.name} wrapper;
 - include only fields directly supported by source_quote;
 - prefer one observation per target paragraph;
-- every nested source_quote follows the same minimal contiguous-passage rule;
+- every nested source_quote follows the same minimal ordered-source-parts rule;
 - if a nested record refers to another target paragraph, it must carry that
-  paragraph's ID and its own minimal character-for-character source_quote;
+  paragraph's ID and its own minimal source_quote;
 - if one paragraph supports several observations, reuse the same paragraph ID;
 - never increment paragraph IDs for sentences inside one paragraph;
 - never copy field definitions or instructions as extracted values.
@@ -1132,13 +1134,19 @@ def _validate_grounded_source_quote(
     path: str,
     paragraph_index: int,
 ) -> None:
-    """Validate one relevant quote and expose where a long quote diverges."""
+    """Validate one quote as contiguous text or ordered verbatim source parts."""
 
     normalized_quote = _normalize_grounding_text(source_quote)
     normalized_source = _normalize_grounding_text(paragraph_text)
     if not normalized_quote:
         raise ValueError(f"{path} cannot be empty")
-    if normalized_quote in normalized_source:
+    if (
+        normalized_quote in normalized_source
+        or _is_ordered_grounding_parts(
+            normalized_quote,
+            normalized_source,
+        )
+    ):
         return
 
     matched_prefix_length = _longest_grounded_prefix_length(
@@ -1167,9 +1175,29 @@ def _validate_grounded_source_quote(
     if source_context:
         details += f", paragraph_near_mismatch={source_context!r}"
     raise ValueError(
-        f"{path} is not an exact quote from paragraph "
+        f"{path} is not an exact quote or ordered selection from paragraph "
         f"{paragraph_index}: {details}"
     )
+
+
+def _is_ordered_grounding_parts(quote: str, source: str) -> bool:
+    """Return whether all quote tokens occur unchanged and ordered in source."""
+
+    quote_tokens = re.findall(r"\w+|[^\w\s]", quote, flags=re.UNICODE)
+    source_tokens = re.findall(r"\w+|[^\w\s]", source, flags=re.UNICODE)
+    if not quote_tokens:
+        return False
+
+    source_cursor = 0
+    for quote_token in quote_tokens:
+        try:
+            source_cursor = source_tokens.index(
+                quote_token,
+                source_cursor,
+            ) + 1
+        except ValueError:
+            return False
+    return True
 
 
 def _longest_grounded_prefix_length(quote: str, source: str) -> int:
