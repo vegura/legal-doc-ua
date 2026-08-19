@@ -550,6 +550,7 @@ def build_v2_map_schema(section_field: pa.Field) -> pa.Schema:
                 section_field.type,
                 nullable=False,
             ),
+            pa.field("conviction_law_articles", pa.list_(pa.string()), nullable=True),
         ]
     )
     return pa.schema(
